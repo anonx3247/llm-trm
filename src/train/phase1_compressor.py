@@ -212,6 +212,9 @@ class CompressorPretrainer:
             d_compressed=self.config.d_compressed,
         )
 
+        # Match model dtype (bfloat16)
+        self.compressor = self.compressor.to(torch.bfloat16)
+
         # Apply torch.compile for faster training
         if self.config.use_torch_compile:
             try:
