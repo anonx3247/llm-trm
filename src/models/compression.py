@@ -80,6 +80,6 @@ class LatentAttentionCompressor(nn.Module):
 
         # Feed-forward for further processing
         ff_out = self.compress_ff(latents)
-        latents = self.compress_ff_norm(latents + ff_out)
+        compressed: torch.Tensor = self.compress_ff_norm(latents + ff_out)
 
-        return latents
+        return compressed

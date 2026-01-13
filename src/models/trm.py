@@ -74,6 +74,12 @@ class RecursiveReasoningBase(nn.Module):
     - self.halt_head: Halting mechanism
     """
 
+    # Type hints for attributes that subclasses must define
+    net: nn.Module
+    n_latent_steps: int
+    n_deep_recursions: int
+    halt_head: nn.Module
+
     def latent_recursion(
         self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -220,7 +226,9 @@ class TRM(RecursiveReasoningBase):
 
         return (y.detach(), z.detach()), logits, halt_prob
 
-    def forward(self, x_input: torch.Tensor, return_all_steps: bool = False) -> torch.Tensor:
+    def forward(
+        self, x_input: torch.Tensor, return_all_steps: bool = False
+    ) -> torch.Tensor | list[torch.Tensor]:
         """
         Forward pass through TRM with deep supervision.
 
@@ -282,7 +290,7 @@ class TRM(RecursiveReasoningBase):
         y = torch.zeros_like(x)
         z = torch.zeros_like(x)
 
-        total_loss = 0.0
+        total_loss: torch.Tensor = torch.tensor(0.0, device=x.device)
 
         # Deep supervision loop
         for _step in range(self.n_supervision_steps):

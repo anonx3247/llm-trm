@@ -6,6 +6,8 @@ The TRM processes hidden states when a <think> token is encountered, using a sli
 window approach where TRM reasoning states replace the oldest positions.
 """
 
+from typing import Any
+
 import torch
 import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model
@@ -74,7 +76,7 @@ class HiddenStateTRM(RecursiveReasoningBase):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         return_all_steps: bool = False,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | list[torch.Tensor]:
         """
         Process hidden states through TRM with sliding window output.
 
@@ -168,8 +170,8 @@ class SmolLMv3WithTRM(nn.Module):
     ):
         super().__init__()
 
-        # Load base model
-        self.base_model = AutoModelForCausalLM.from_pretrained(
+        # Load base model (type is Any to handle both regular and PEFT models)
+        self.base_model: Any = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.bfloat16, device_map="auto"
         )
 
