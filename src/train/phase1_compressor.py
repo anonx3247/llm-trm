@@ -46,7 +46,7 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
-    wandb = None
+    wandb = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -94,9 +94,7 @@ class Phase1Config:
     wandb_run_name: str | None = None
 
     # Sweep config
-    sweep_d_compressed: list[int] = field(
-        default_factory=lambda: [64, 128, 256, 512, 1024]
-    )
+    sweep_d_compressed: list[int] = field(default_factory=lambda: [64, 128, 256, 512, 1024])
 
     # Reproducibility
     seed: int = 42
@@ -267,9 +265,7 @@ class CompressorPretrainer:
 
     def _load_dataset(self, use_thinking: bool = False) -> DataLoader:
         """Load dataset for training"""
-        self._print(
-            f"Loading dataset: {self.config.dataset_name}/{self.config.dataset_subset}..."
-        )
+        self._print(f"Loading dataset: {self.config.dataset_name}/{self.config.dataset_subset}...")
 
         dataset = load_dataset(
             self.config.dataset_name,
@@ -339,9 +335,7 @@ class CompressorPretrainer:
             mse = F.mse_loss(reconstructed, original).item()
 
             # Relative error
-            rel_error = (
-                torch.norm(reconstructed - original) / torch.norm(original)
-            ).item()
+            rel_error = (torch.norm(reconstructed - original) / torch.norm(original)).item()
 
             # Cosine similarity (averaged over sequence)
             cos_sim = (
@@ -366,9 +360,7 @@ class CompressorPretrainer:
             "variance_ratio": var_ratio,
         }
 
-    def _train_step(
-        self, hidden_states: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def _train_step(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
         """Single training step with metrics"""
         compressed = self.compressor(hidden_states)
         reconstructed = self.compressor.decompress(compressed)
@@ -377,7 +369,9 @@ class CompressorPretrainer:
         metrics = self._compute_metrics(hidden_states, reconstructed)
         return loss, metrics
 
-    def _save_best_checkpoint(self, stage_name: str, loss: float, metrics: dict[str, float]) -> bool:
+    def _save_best_checkpoint(
+        self, stage_name: str, loss: float, metrics: dict[str, float]
+    ) -> bool:
         """Save checkpoint only if it's the best so far. Returns True if saved."""
         if loss >= self.best_loss:
             return False
@@ -433,15 +427,11 @@ class CompressorPretrainer:
         # Create scheduler
         num_training_steps = len(dataloader) * self.config.num_epochs
         num_warmup_steps = int(num_training_steps * self.config.warmup_ratio)
-        scheduler = CosineAnnealingLR(
-            self.optimizer, T_max=num_training_steps - num_warmup_steps
-        )
+        scheduler = CosineAnnealingLR(self.optimizer, T_max=num_training_steps - num_warmup_steps)
 
         # Prepare for distributed training
-        self.compressor, self.optimizer, dataloader, scheduler = (
-            self.accelerator.prepare(
-                self.compressor, self.optimizer, dataloader, scheduler
-            )
+        self.compressor, self.optimizer, dataloader, scheduler = self.accelerator.prepare(
+            self.compressor, self.optimizer, dataloader, scheduler
         )
 
         # Initialize early stopping
@@ -509,9 +499,7 @@ class CompressorPretrainer:
 
                     if global_step % self.config.log_steps == 0:
                         avg_loss = epoch_loss / num_batches
-                        avg_metrics = {
-                            k: v / num_batches for k, v in epoch_metrics.items()
-                        }
+                        avg_metrics = {k: v / num_batches for k, v in epoch_metrics.items()}
 
                         pbar.set_postfix(
                             {
@@ -526,12 +514,8 @@ class CompressorPretrainer:
                                 {
                                     "train/loss": avg_loss,
                                     "train/mse": avg_metrics["mse"],
-                                    "train/relative_error": avg_metrics[
-                                        "relative_error"
-                                    ],
-                                    "train/cosine_similarity": avg_metrics[
-                                        "cosine_similarity"
-                                    ],
+                                    "train/relative_error": avg_metrics["relative_error"],
+                                    "train/cosine_similarity": avg_metrics["cosine_similarity"],
                                     "train/variance_ratio": avg_metrics["variance_ratio"],
                                     "train/learning_rate": scheduler.get_last_lr()[0],
                                     "train/epoch": epoch,
@@ -596,9 +580,7 @@ class CompressorPretrainer:
         stage1a_path = os.path.join(self.config.output_dir, "stage1a_best.pt")
         if os.path.exists(stage1a_path):
             self._print(f"Loading Stage 1a checkpoint from {stage1a_path}")
-            checkpoint = torch.load(
-                stage1a_path, map_location=self.accelerator.device
-            )
+            checkpoint = torch.load(stage1a_path, map_location=self.accelerator.device)
             self.compressor.load_state_dict(checkpoint["compressor"])
         else:
             self._print("Warning: No Stage 1a checkpoint found. Training from scratch.")
@@ -708,9 +690,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--early_stopping", action="store_true", default=True, help="Enable early stopping"
     )
-    parser.add_argument(
-        "--no_early_stopping", action="store_false", dest="early_stopping"
-    )
+    parser.add_argument("--no_early_stopping", action="store_false", dest="early_stopping")
     parser.add_argument(
         "--early_stopping_patience",
         type=int,
