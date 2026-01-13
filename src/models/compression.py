@@ -67,7 +67,10 @@ class DimensionCompressor(nn.Module):
             reconstructed: [B, L, D] - Reconstructed hidden states
         """
         # Weight-tied: decompress.weight = compress.weight.T
-        return F.linear(x_compressed, self.compress.weight.T)
+        # Use .t() and ensure dtype matches input
+        weight_t = self.compress.weight.t().to(x_compressed.dtype)
+        result: torch.Tensor = F.linear(x_compressed, weight_t)
+        return result
 
     def reconstruction_loss(self, x: torch.Tensor) -> torch.Tensor:
         """

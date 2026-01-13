@@ -155,11 +155,20 @@ class CompressorPretrainer:
         self.best_loss = float("inf")
         self.best_metrics: dict[str, float] = {}
 
+        # Determine mixed precision based on device
+        # MPS doesn't support bfloat16, use fp16 instead
+        if torch.cuda.is_available():
+            mixed_precision = "bf16"
+        elif torch.backends.mps.is_available():
+            mixed_precision = "fp16"
+        else:
+            mixed_precision = "no"
+
         # Initialize accelerator for multi-GPU
         self.accelerator = Accelerator(
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             log_with="wandb" if config.use_wandb and WANDB_AVAILABLE else None,
-            mixed_precision="bf16",
+            mixed_precision=mixed_precision,
         )
 
         # Set seed for reproducibility
@@ -175,6 +184,16 @@ class CompressorPretrainer:
         self._init_optimizer()
         self._init_wandb()
 
+    def _get_device_and_dtype(self) -> tuple[str, torch.dtype]:
+        """Determine the best device and dtype for training."""
+        if torch.cuda.is_available():
+            return "cuda", torch.bfloat16
+        elif torch.backends.mps.is_available():
+            # MPS doesn't support bfloat16, use float16
+            return "mps", torch.float16
+        else:
+            return "cpu", torch.float32
+
     def _init_model(self) -> None:
         """Initialize frozen LLM for hidden state extraction"""
         self._print(f"Loading {self.config.model_name}...")
@@ -182,19 +201,41 @@ class CompressorPretrainer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Load model - will be on its own device(s) via device_map
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
+        # Determine device and dtype
+        self.device, self.dtype = self._get_device_and_dtype()
+        self._print(f"Using device: {self.device}, dtype: {self.dtype}")
+
+        # Load model with appropriate settings per device
+        if self.device == "cuda":
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.config.model_name,
+                torch_dtype=self.dtype,
+                device_map="auto",
+            )
+        else:
+            # MPS and CPU don't support device_map="auto"
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.config.model_name,
+                torch_dtype=self.dtype,
+            )
+            self.model = self.model.to(torch.device(self.device))  # type: ignore[arg-type]
+
         self.model.eval()
 
         # Freeze all parameters
         for param in self.model.parameters():
             param.requires_grad = False
 
-        self._print(f"Model loaded. Hidden size: {self.model.config.hidden_size}")
+        # Get actual hidden size from model (override config if different)
+        actual_hidden_size = self.model.config.hidden_size
+        if self.config.hidden_size != actual_hidden_size:
+            self._print(
+                f"Warning: Config hidden_size ({self.config.hidden_size}) doesn't match "
+                f"model ({actual_hidden_size}). Using model's hidden_size."
+            )
+            self.config.hidden_size = actual_hidden_size
+
+        self._print(f"Model loaded. Hidden size: {actual_hidden_size}")
 
     def _init_compressor(self) -> None:
         """Initialize DimensionCompressor with optional torch.compile"""
@@ -203,13 +244,18 @@ class CompressorPretrainer:
             d_compressed=self.config.d_compressed,
         )
 
-        # Apply torch.compile for faster training
-        if self.config.use_torch_compile:
+        # Match model dtype
+        self.compressor = self.compressor.to(self.dtype)
+
+        # Apply torch.compile for faster training (not supported well on MPS)
+        if self.config.use_torch_compile and self.device == "cuda":
             try:
                 self.compressor = torch.compile(self.compressor)  # type: ignore[assignment]
                 self._print("Torch compile enabled for compressor")
             except Exception as e:
                 self._print(f"Torch compile failed, using eager mode: {e}")
+        elif self.config.use_torch_compile and self.device != "cuda":
+            self._print(f"Torch compile disabled on {self.device} (not well supported)")
 
         # Get parameters (handle both compiled and regular modules)
         params = self.compressor.parameters()
