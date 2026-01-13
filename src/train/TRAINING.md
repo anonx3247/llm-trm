@@ -28,6 +28,16 @@ The compressor uses weight-tied (symmetric) linear layers for stability.
 | **1a** | Identity reconstruction | Regular text from fineweb-edu |
 | **1b** | CoT trajectory finetuning | Thinking sequences (builds on 1a checkpoint) |
 
+### Features
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| **Early Stopping** | Stops training when loss plateaus | Enabled, patience=3 |
+| **Best Checkpoint Only** | Only saves best model (saves storage) | Enabled |
+| **Torch Compile** | Uses `torch.compile` for faster training | Enabled |
+| **Multi-GPU** | Distributed training via Accelerate | Supported |
+| **Wandb Logging** | Tracks metrics and saves artifacts | Enabled |
+
 ### Running Training
 
 #### Single GPU
@@ -41,6 +51,12 @@ python -m src.train.phase1_compressor --stage 1a --d_compressed 512
 
 # Stage 1b (requires stage 1a checkpoint)
 python -m src.train.phase1_compressor --stage 1b
+
+# Disable early stopping (train all epochs)
+python -m src.train.phase1_compressor --stage 1a --no_early_stopping
+
+# Disable torch.compile (for debugging)
+python -m src.train.phase1_compressor --stage 1a --no_torch_compile
 ```
 
 #### Multi-GPU (Scaleway / Cloud)
@@ -87,12 +103,27 @@ Each D' value creates a separate training run with its own checkpoint directory 
 | `--stage` | `1a` | Training stage (`1a` or `1b`) |
 | `--d_compressed` | `256` | Compressed dimension D' |
 | `--batch_size` | `8` | Batch size per GPU |
-| `--num_epochs` | `10` | Number of training epochs |
+| `--num_epochs` | `10` | Maximum training epochs |
 | `--learning_rate` | `1e-3` | Learning rate |
 | `--num_samples` | `50000` | Number of training samples |
 | `--max_seq_length` | `512` | Maximum sequence length |
 | `--output_dir` | `./checkpoints/phase1` | Checkpoint directory |
 | `--seed` | `42` | Random seed |
+
+#### Early Stopping Options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--early_stopping` | `True` | Enable early stopping |
+| `--no_early_stopping` | - | Disable early stopping |
+| `--early_stopping_patience` | `3` | Epochs without improvement before stopping |
+
+#### Torch Compile Options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--torch_compile` | `True` | Enable torch.compile |
+| `--no_torch_compile` | - | Disable torch.compile (for debugging) |
 
 #### Wandb Options
 
@@ -116,15 +147,12 @@ The following metrics are logged to wandb:
 
 ### Checkpoints
 
-Checkpoints are saved to `{output_dir}/`:
+Only the best checkpoint is saved (overwrites on improvement):
 
 ```
 checkpoints/phase1/
-├── stage1a_step1000.pt
-├── stage1a_step2000.pt
-├── stage1a_final.pt      # Used by stage 1b
-├── stage1b_step1000.pt
-└── stage1b_final.pt      # Final compressor weights
+├── stage1a_best.pt      # Best stage 1a model
+└── stage1b_best.pt      # Best stage 1b model (after finetuning)
 ```
 
 For sweeps, each D' gets its own subdirectory:
@@ -132,11 +160,11 @@ For sweeps, each D' gets its own subdirectory:
 ```
 checkpoints/phase1/
 ├── d64/
-│   └── stage1a_final.pt
+│   └── stage1a_best.pt
 ├── d128/
-│   └── stage1a_final.pt
+│   └── stage1a_best.pt
 ├── d256/
-│   └── stage1a_final.pt
+│   └── stage1a_best.pt
 └── ...
 ```
 

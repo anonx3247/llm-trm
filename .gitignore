@@ -39,6 +39,7 @@ env/
 *.safetensors
 best_model.pt
 smollm_trm_checkpoint/
+checkpoints/
 
 # Agent files
 .agent

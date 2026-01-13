@@ -66,6 +66,14 @@ class Phase1Config:
     gradient_accumulation_steps: int = 4
     max_grad_norm: float = 1.0
 
+    # Early stopping
+    early_stopping: bool = True
+    early_stopping_patience: int = 3  # Stop after N epochs without improvement
+    early_stopping_min_delta: float = 1e-6  # Minimum improvement to count
+
+    # Torch compile
+    use_torch_compile: bool = True
+
     # Stage
     stage: str = "1a"  # "1a" for identity, "1b" for CoT
 
@@ -78,9 +86,7 @@ class Phase1Config:
 
     # Output
     output_dir: str = "./checkpoints/phase1"
-    save_steps: int = 1000
     log_steps: int = 10
-    eval_steps: int = 500
 
     # Wandb
     use_wandb: bool = True
@@ -100,9 +106,38 @@ class Phase1Config:
         return self.hidden_size / self.d_compressed
 
 
+class EarlyStopping:
+    """Early stopping handler to stop training when loss stops improving."""
+
+    def __init__(self, patience: int = 3, min_delta: float = 1e-6):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_loss = float("inf")
+        self.counter = 0
+        self.should_stop = False
+
+    def __call__(self, loss: float) -> bool:
+        """Check if training should stop. Returns True if improved."""
+        if loss < self.best_loss - self.min_delta:
+            self.best_loss = loss
+            self.counter = 0
+            return True  # Improved
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.should_stop = True
+            return False  # Did not improve
+
+
 class CompressorPretrainer:
     """
     Phase 1 trainer for DimensionCompressor with multi-GPU support.
+
+    Features:
+    - Early stopping when loss plateaus
+    - Best checkpoint saving only (saves storage)
+    - Torch compile for faster training
+    - Multi-GPU via Accelerate
 
     Stage 1a: Identity Training
         - Run LLM on regular text
@@ -119,6 +154,8 @@ class CompressorPretrainer:
 
     def __init__(self, config: Phase1Config):
         self.config = config
+        self.best_loss = float("inf")
+        self.best_metrics: dict[str, float] = {}
 
         # Initialize accelerator for multi-GPU
         self.accelerator = Accelerator(
@@ -162,13 +199,23 @@ class CompressorPretrainer:
         self._print(f"Model loaded. Hidden size: {self.model.config.hidden_size}")
 
     def _init_compressor(self) -> None:
-        """Initialize DimensionCompressor"""
+        """Initialize DimensionCompressor with optional torch.compile"""
         self.compressor = DimensionCompressor(
             d_model=self.config.hidden_size,
             d_compressed=self.config.d_compressed,
         )
 
-        num_params = sum(p.numel() for p in self.compressor.parameters())
+        # Apply torch.compile for faster training
+        if self.config.use_torch_compile:
+            try:
+                self.compressor = torch.compile(self.compressor)  # type: ignore[assignment]
+                self._print("Torch compile enabled for compressor")
+            except Exception as e:
+                self._print(f"Torch compile failed, using eager mode: {e}")
+
+        # Get parameters (handle both compiled and regular modules)
+        params = self.compressor.parameters()
+        num_params = sum(p.numel() for p in params)
         self._print(f"Compressor initialized. Parameters: {num_params:,}")
         self._print(f"Compression ratio: {self.config.compression_ratio:.1f}x")
 
@@ -206,6 +253,9 @@ class CompressorPretrainer:
                     "max_seq_length": self.config.max_seq_length,
                     "stage": self.config.stage,
                     "model_name": self.config.model_name,
+                    "early_stopping": self.config.early_stopping,
+                    "early_stopping_patience": self.config.early_stopping_patience,
+                    "use_torch_compile": self.config.use_torch_compile,
                 },
                 init_kwargs={"wandb": {"name": run_name}},
             )
@@ -294,11 +344,15 @@ class CompressorPretrainer:
             ).item()
 
             # Cosine similarity (averaged over sequence)
-            cos_sim = F.cosine_similarity(
-                original.reshape(-1, original.size(-1)),
-                reconstructed.reshape(-1, reconstructed.size(-1)),
-                dim=-1,
-            ).mean().item()
+            cos_sim = (
+                F.cosine_similarity(
+                    original.reshape(-1, original.size(-1)),
+                    reconstructed.reshape(-1, reconstructed.size(-1)),
+                    dim=-1,
+                )
+                .mean()
+                .item()
+            )
 
             # Per-dimension variance preserved
             orig_var = original.var(dim=(0, 1))
@@ -323,6 +377,51 @@ class CompressorPretrainer:
         metrics = self._compute_metrics(hidden_states, reconstructed)
         return loss, metrics
 
+    def _save_best_checkpoint(self, stage_name: str, loss: float, metrics: dict[str, float]) -> bool:
+        """Save checkpoint only if it's the best so far. Returns True if saved."""
+        if loss >= self.best_loss:
+            return False
+
+        self.best_loss = loss
+        self.best_metrics = metrics.copy()
+
+        self.accelerator.wait_for_everyone()
+
+        if self.accelerator.is_main_process:
+            # Unwrap model if distributed
+            unwrapped = self.accelerator.unwrap_model(self.compressor)
+            checkpoint = {
+                "compressor": unwrapped.state_dict(),
+                "config": self.config,
+                "best_loss": self.best_loss,
+                "best_metrics": self.best_metrics,
+            }
+
+            # Save as best checkpoint (overwrites previous best)
+            path = os.path.join(self.config.output_dir, f"stage{stage_name}_best.pt")
+            torch.save(checkpoint, path)
+            self._print(
+                f"New best checkpoint! Loss: {loss:.6f}, "
+                f"Cosine Sim: {metrics['cosine_similarity']:.4f}"
+            )
+
+            # Also save to wandb if enabled
+            if self.config.use_wandb and WANDB_AVAILABLE and wandb is not None:
+                artifact = wandb.Artifact(
+                    name=f"compressor-stage{stage_name}-best",
+                    type="model",
+                    metadata={
+                        "d_compressed": self.config.d_compressed,
+                        "compression_ratio": self.config.compression_ratio,
+                        "best_loss": self.best_loss,
+                        "cosine_similarity": metrics["cosine_similarity"],
+                    },
+                )
+                artifact.add_file(path)
+                wandb.log_artifact(artifact)
+
+        return True
+
     def _run_training_loop(self, stage_name: str) -> None:
         """Common training loop for both stages"""
         self._print(f"\n{'=' * 50}")
@@ -345,8 +444,15 @@ class CompressorPretrainer:
             )
         )
 
+        # Initialize early stopping
+        early_stopper = EarlyStopping(
+            patience=self.config.early_stopping_patience,
+            min_delta=self.config.early_stopping_min_delta,
+        )
+
         self.compressor.train()
         global_step = 0
+        self.best_loss = float("inf")
 
         for epoch in range(self.config.num_epochs):
             epoch_loss = 0.0
@@ -403,7 +509,9 @@ class CompressorPretrainer:
 
                     if global_step % self.config.log_steps == 0:
                         avg_loss = epoch_loss / num_batches
-                        avg_metrics = {k: v / num_batches for k, v in epoch_metrics.items()}
+                        avg_metrics = {
+                            k: v / num_batches for k, v in epoch_metrics.items()
+                        }
 
                         pbar.set_postfix(
                             {
@@ -418,8 +526,12 @@ class CompressorPretrainer:
                                 {
                                     "train/loss": avg_loss,
                                     "train/mse": avg_metrics["mse"],
-                                    "train/relative_error": avg_metrics["relative_error"],
-                                    "train/cosine_similarity": avg_metrics["cosine_similarity"],
+                                    "train/relative_error": avg_metrics[
+                                        "relative_error"
+                                    ],
+                                    "train/cosine_similarity": avg_metrics[
+                                        "cosine_similarity"
+                                    ],
                                     "train/variance_ratio": avg_metrics["variance_ratio"],
                                     "train/learning_rate": scheduler.get_last_lr()[0],
                                     "train/epoch": epoch,
@@ -428,11 +540,7 @@ class CompressorPretrainer:
                                 step=global_step,
                             )
 
-                    # Save checkpoint
-                    if global_step % self.config.save_steps == 0:
-                        self._save_checkpoint(f"stage{stage_name}_step{global_step}")
-
-            # End of epoch logging
+            # End of epoch
             avg_epoch_loss = epoch_loss / num_batches
             avg_epoch_metrics = {k: v / num_batches for k, v in epoch_metrics.items()}
 
@@ -442,19 +550,41 @@ class CompressorPretrainer:
                 f"Cosine Sim: {avg_epoch_metrics['cosine_similarity']:.4f}"
             )
 
+            # Log epoch metrics to wandb
             if self.config.use_wandb and WANDB_AVAILABLE:
                 self.accelerator.log(
                     {
                         "epoch/loss": avg_epoch_loss,
                         "epoch/cosine_similarity": avg_epoch_metrics["cosine_similarity"],
                         "epoch/relative_error": avg_epoch_metrics["relative_error"],
+                        "epoch/best_loss": self.best_loss,
                     },
                     step=global_step,
                 )
 
-        # Save final checkpoint
-        self._save_checkpoint(f"stage{stage_name}_final")
+            # Save best checkpoint
+            self._save_best_checkpoint(stage_name, avg_epoch_loss, avg_epoch_metrics)
+
+            # Early stopping check
+            if self.config.early_stopping:
+                improved = early_stopper(avg_epoch_loss)
+                if early_stopper.should_stop:
+                    self._print(
+                        f"Early stopping triggered after {epoch + 1} epochs. "
+                        f"No improvement for {self.config.early_stopping_patience} epochs."
+                    )
+                    break
+                elif not improved:
+                    self._print(
+                        f"No improvement. Patience: {early_stopper.counter}/"
+                        f"{self.config.early_stopping_patience}"
+                    )
+
         self._print(f"\nStage {stage_name} training complete!")
+        self._print(
+            f"Best loss: {self.best_loss:.6f}, "
+            f"Best cosine sim: {self.best_metrics.get('cosine_similarity', 0):.4f}"
+        )
 
     def train_stage_1a(self) -> None:
         """Stage 1a: Identity training on regular hidden states."""
@@ -463,7 +593,7 @@ class CompressorPretrainer:
     def train_stage_1b(self) -> None:
         """Stage 1b: Finetune on CoT thinking trajectories."""
         # Load stage 1a checkpoint if available
-        stage1a_path = os.path.join(self.config.output_dir, "stage1a_final.pt")
+        stage1a_path = os.path.join(self.config.output_dir, "stage1a_best.pt")
         if os.path.exists(stage1a_path):
             self._print(f"Loading Stage 1a checkpoint from {stage1a_path}")
             checkpoint = torch.load(
@@ -474,35 +604,6 @@ class CompressorPretrainer:
             self._print("Warning: No Stage 1a checkpoint found. Training from scratch.")
 
         self._run_training_loop("1b")
-
-    def _save_checkpoint(self, name: str) -> None:
-        """Save checkpoint"""
-        self.accelerator.wait_for_everyone()
-
-        if self.accelerator.is_main_process:
-            # Unwrap model if distributed
-            unwrapped = self.accelerator.unwrap_model(self.compressor)
-            checkpoint = {
-                "compressor": unwrapped.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "config": self.config,
-            }
-            path = os.path.join(self.config.output_dir, f"{name}.pt")
-            torch.save(checkpoint, path)
-            self._print(f"Checkpoint saved to {path}")
-
-            # Also save to wandb if enabled
-            if self.config.use_wandb and WANDB_AVAILABLE and wandb is not None:
-                artifact = wandb.Artifact(
-                    name=f"compressor-{name}",
-                    type="model",
-                    metadata={
-                        "d_compressed": self.config.d_compressed,
-                        "compression_ratio": self.config.compression_ratio,
-                    },
-                )
-                artifact.add_file(path)
-                wandb.log_artifact(artifact)
 
     def train(self) -> None:
         """Run the appropriate training stage"""
@@ -535,7 +636,7 @@ def run_compression_sweep(base_config: Phase1Config) -> None:
     """
     print(f"Running compression sweep over D' values: {base_config.sweep_d_compressed}")
 
-    results = []
+    results: list[dict[str, Any]] = []
 
     for d_compressed in base_config.sweep_d_compressed:
         print(f"\n{'#' * 60}")
@@ -551,6 +652,9 @@ def run_compression_sweep(base_config: Phase1Config) -> None:
             batch_size=base_config.batch_size,
             learning_rate=base_config.learning_rate,
             num_epochs=base_config.num_epochs,
+            early_stopping=base_config.early_stopping,
+            early_stopping_patience=base_config.early_stopping_patience,
+            use_torch_compile=base_config.use_torch_compile,
             stage=base_config.stage,
             dataset_name=base_config.dataset_name,
             dataset_subset=base_config.dataset_subset,
@@ -570,12 +674,20 @@ def run_compression_sweep(base_config: Phase1Config) -> None:
             {
                 "d_compressed": d_compressed,
                 "compression_ratio": config.compression_ratio,
+                "best_loss": trainer.best_loss,
+                "best_metrics": trainer.best_metrics,
             }
         )
 
     print("\n" + "=" * 60)
-    print("Sweep complete! Results saved to respective directories.")
+    print("Sweep complete! Results:")
     print("=" * 60)
+    for r in results:
+        print(
+            f"  D'={r['d_compressed']:4d} ({r['compression_ratio']:5.1f}x): "
+            f"loss={r['best_loss']:.6f}, "
+            f"cos_sim={r['best_metrics'].get('cosine_similarity', 0):.4f}"
+        )
 
 
 if __name__ == "__main__":
@@ -591,6 +703,26 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=50000)
     parser.add_argument("--max_seq_length", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=4)
+
+    # Early stopping
+    parser.add_argument(
+        "--early_stopping", action="store_true", default=True, help="Enable early stopping"
+    )
+    parser.add_argument(
+        "--no_early_stopping", action="store_false", dest="early_stopping"
+    )
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=3,
+        help="Epochs without improvement before stopping",
+    )
+
+    # Torch compile
+    parser.add_argument(
+        "--torch_compile", action="store_true", default=True, help="Use torch.compile"
+    )
+    parser.add_argument("--no_torch_compile", action="store_false", dest="torch_compile")
 
     # Wandb options
     parser.add_argument("--use_wandb", action="store_true", default=True)
@@ -626,6 +758,9 @@ if __name__ == "__main__":
         num_samples=args.num_samples,
         max_seq_length=args.max_seq_length,
         num_workers=args.num_workers,
+        early_stopping=args.early_stopping,
+        early_stopping_patience=args.early_stopping_patience,
+        use_torch_compile=args.torch_compile,
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
