@@ -1,85 +1,89 @@
 """
-Latent Attention Compression for TRM
+Dimension Compression for TRM
 
-Perceiver-style compression that uses learned latent queries to compress
-variable-length sequences via cross-attention.
+MLA-inspired linear compression that reduces hidden state dimensionality
+while preserving information through weight-tied symmetric compression.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class LatentAttentionCompressor(nn.Module):
+class DimensionCompressor(nn.Module):
     """
-    Attention-based sequence compression inspired by Perceiver/MLA.
+    Linear dimension compression inspired by DeepSeek MLA.
 
-    Uses learned latent queries to compress variable-length sequences via cross-attention.
-    Handles sequences of any length (up to max_seq_len) with constant parameters.
+    Compresses hidden states from D to D' dimensions using a simple linear projection.
+    Uses weight-tied (symmetric) decompression for faster convergence and stability.
 
-    Compression: [B, L, D] -> CrossAttention(latents, sequence) -> [B, M, D]
+    Compression: [B, L, D] -> [B, L, D'] where D' << D
 
     Benefits:
-    - Variable length inputs (no fixed L)
-    - Semantic aggregation via attention
-    - Much fewer parameters for long sequences
-    - Interpretable (attention weights show what's compressed)
+    - Simple and efficient (just linear ops)
+    - Weight-tied decompression ensures symmetry
+    - Preserves sequence length L
+    - Easy to train with reconstruction loss
     """
 
-    def __init__(self, hidden_size: int, num_latents: int, n_heads: int = 8, dropout: float = 0.1):
+    def __init__(self, d_model: int = 3072, d_compressed: int = 256):
+        """
+        Args:
+            d_model: Original hidden dimension (e.g., 3072 for SmolLM3-3B)
+            d_compressed: Compressed dimension (e.g., 256 for 12x compression)
+        """
         super().__init__()
 
-        self.hidden_size = hidden_size
-        self.num_latents = num_latents
-        self.n_heads = n_heads
+        self.d_model = d_model
+        self.d_compressed = d_compressed
 
-        # Learned latent queries for compression
-        # These act as "summary" tokens that aggregate information
-        self.latent_queries = nn.Parameter(torch.randn(num_latents, hidden_size))
+        # Single linear layer for compression (no bias for cleaner transpose)
+        self.compress = nn.Linear(d_model, d_compressed, bias=False)
 
-        # Compression: latents attend to full sequence
-        self.compress_attn = nn.MultiheadAttention(
-            embed_dim=hidden_size, num_heads=n_heads, dropout=dropout, batch_first=True
-        )
-        self.compress_norm = nn.LayerNorm(hidden_size)
-        self.compress_ff = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size * 4, hidden_size),
-            nn.Dropout(dropout),
-        )
-        self.compress_ff_norm = nn.LayerNorm(hidden_size)
+        # Initialize with orthogonal initialization for better reconstruction
+        nn.init.orthogonal_(self.compress.weight)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Compress variable-length sequence to fixed number of latents.
+        Compress hidden states.
 
         Args:
-            x: [B, L, D] - Input sequence (L can vary between batches)
-            attention_mask: [B, L] - Optional mask for padding (True = valid, False = padding)
+            x: [B, L, D] - Input hidden states
 
         Returns:
-            compressed: [B, M, D] - Fixed number of latent representations
+            compressed: [B, L, D'] - Compressed hidden states
         """
-        batch_size, seq_len, _ = x.shape
+        result: torch.Tensor = self.compress(x)
+        return result
 
-        # Expand latent queries for batch: [M, D] -> [B, M, D]
-        latents = self.latent_queries.unsqueeze(0).expand(batch_size, -1, -1)
+    def decompress(self, x_compressed: torch.Tensor) -> torch.Tensor:
+        """
+        Decompress hidden states using weight-tied transpose.
 
-        # Cross-attention: latents (Q) attend to sequence (K, V)
-        # This semantically aggregates information from variable-length input
-        # Convert attention_mask to key_padding_mask format (True for positions to ignore)
-        key_padding_mask = None
-        if attention_mask is not None:
-            key_padding_mask = attention_mask == 0  # True for padding positions
+        Args:
+            x_compressed: [B, L, D'] - Compressed hidden states
 
-        attn_out, _ = self.compress_attn(
-            query=latents, key=x, value=x, key_padding_mask=key_padding_mask
-        )
-        latents = self.compress_norm(latents + attn_out)
+        Returns:
+            reconstructed: [B, L, D] - Reconstructed hidden states
+        """
+        # Weight-tied: decompress.weight = compress.weight.T
+        return F.linear(x_compressed, self.compress.weight.T)
 
-        # Feed-forward for further processing
-        ff_out = self.compress_ff(latents)
-        compressed: torch.Tensor = self.compress_ff_norm(latents + ff_out)
+    def reconstruction_loss(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute reconstruction loss for training.
 
-        return compressed
+        Args:
+            x: [B, L, D] - Original hidden states
+
+        Returns:
+            loss: MSE between original and reconstructed
+        """
+        compressed = self.forward(x)
+        reconstructed = self.decompress(compressed)
+        return F.mse_loss(reconstructed, x)
+
+    @property
+    def compression_ratio(self) -> float:
+        """Return the compression ratio D / D'"""
+        return self.d_model / self.d_compressed
