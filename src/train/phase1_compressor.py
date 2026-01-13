@@ -156,12 +156,11 @@ class CompressorPretrainer:
         self.best_metrics: dict[str, float] = {}
 
         # Determine mixed precision based on device
-        # MPS doesn't support bfloat16, use fp16 instead
+        # MPS has issues with mixed precision autocast, disable it
         if torch.cuda.is_available():
             mixed_precision = "bf16"
-        elif torch.backends.mps.is_available():
-            mixed_precision = "fp16"
         else:
+            # MPS and CPU: no mixed precision (MPS autocast causes dtype mismatches)
             mixed_precision = "no"
 
         # Initialize accelerator for multi-GPU
@@ -189,8 +188,8 @@ class CompressorPretrainer:
         if torch.cuda.is_available():
             return "cuda", torch.bfloat16
         elif torch.backends.mps.is_available():
-            # MPS doesn't support bfloat16, use float16
-            return "mps", torch.float16
+            # MPS has issues with mixed precision, use float32 for stability
+            return "mps", torch.float32
         else:
             return "cpu", torch.float32
 
