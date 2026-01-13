@@ -4,12 +4,13 @@ LLM-TRM Models
 Core model components for Tiny Recursive Models integrated with LLMs.
 """
 
-# TRM core components
 # Compression
-from src.models.compression import LatentAttentionCompressor
+from src.models.compression import DimensionCompressor
 
 # SmolLM integration
 from src.models.smollm import HiddenStateTRM, SmolLMv3WithTRM, create_smollm_trm_model
+
+# TRM core components
 from src.models.trm import (
     TRM,
     RecursiveReasoningBase,
@@ -26,7 +27,7 @@ __all__ = [
     "TRM",
     "create_trm_model",
     # Compression
-    "LatentAttentionCompressor",
+    "DimensionCompressor",
     # SmolLM
     "HiddenStateTRM",
     "SmolLMv3WithTRM",

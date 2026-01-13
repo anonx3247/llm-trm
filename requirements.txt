@@ -5,3 +5,4 @@ tqdm>=4.65.0
 pytorch-lightning>=2.0.0
 wandb>=0.15.0
 datasets>=2.14.0
+accelerate>=0.25.0
