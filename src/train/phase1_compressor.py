@@ -218,7 +218,7 @@ class CompressorPretrainer:
                 self.config.model_name,
                 torch_dtype=self.dtype,
             )
-            self.model = self.model.to(torch.device(self.device))
+            self.model = self.model.to(torch.device(self.device))  # type: ignore[arg-type]
 
         self.model.eval()
 
