@@ -8,13 +8,13 @@ window approach where TRM reasoning states replace the oldest positions.
 
 import torch
 import torch.nn as nn
-from typing import Optional
+from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
+
+from src.models.compression import LatentAttentionCompressor
 
 # Import base components
-from src.models.trm import TinyRecursiveNetwork, RecursiveReasoningBase
-from src.models.compression import LatentAttentionCompressor
+from src.models.trm import RecursiveReasoningBase, TinyRecursiveNetwork
 
 
 class HiddenStateTRM(RecursiveReasoningBase):
@@ -42,7 +42,7 @@ class HiddenStateTRM(RecursiveReasoningBase):
         n_latent_steps: int = 6,
         n_deep_recursions: int = 3,
         n_supervision_steps: int = 8,
-        dropout: float = 0.1
+        dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -57,16 +57,13 @@ class HiddenStateTRM(RecursiveReasoningBase):
             hidden_size=hidden_size,
             num_latents=num_latents,
             n_heads=compression_heads,
-            dropout=dropout
+            dropout=dropout,
         )
 
         # Reuse TinyRecursiveNetwork from base implementation
         # Operates on compressed sequence [B, M, D]
         self.net = TinyRecursiveNetwork(
-            d_model=hidden_size,
-            n_layers=n_layers,
-            n_heads=n_heads,
-            dropout=dropout
+            d_model=hidden_size, n_layers=n_layers, n_heads=n_heads, dropout=dropout
         )
 
         # Halting mechanism (required by base class)
@@ -75,8 +72,8 @@ class HiddenStateTRM(RecursiveReasoningBase):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        return_all_steps: bool = False
+        attention_mask: torch.Tensor | None = None,
+        return_all_steps: bool = False,
     ) -> torch.Tensor:
         """
         Process hidden states through TRM with sliding window output.
@@ -107,17 +104,14 @@ class HiddenStateTRM(RecursiveReasoningBase):
         all_outputs = []
 
         # Deep supervision loop - uses inherited run_deep_recursion()
-        for step in range(self.n_supervision_steps):
+        for _step in range(self.n_supervision_steps):
             # Use inherited deep recursion method
             # Operates on compressed space [B, M, D]
             y, z = self.run_deep_recursion(x_compressed, y, z, with_gradients=True)
 
             if return_all_steps:
                 # For debugging: apply sliding window and track
-                shifted = torch.cat([
-                    hidden_states[:, self.num_latents:, :],
-                    y
-                ], dim=1)
+                shifted = torch.cat([hidden_states[:, self.num_latents :, :], y], dim=1)
                 all_outputs.append(shifted)
 
             # Check if we should halt
@@ -134,10 +128,13 @@ class HiddenStateTRM(RecursiveReasoningBase):
         # - Truncate first M positions from input
         # - Append M TRM reasoning states
         # Result: [B, L, D] (same shape as input)
-        shifted_states = torch.cat([
-            hidden_states[:, self.num_latents:, :],  # [B, L-M, D] - drop first M
-            y                                         # [B, M, D] - append TRM reasoning
-        ], dim=1)
+        shifted_states = torch.cat(
+            [
+                hidden_states[:, self.num_latents :, :],  # [B, L-M, D] - drop first M
+                y,  # [B, M, D] - append TRM reasoning
+            ],
+            dim=1,
+        )
 
         if return_all_steps:
             return all_outputs
@@ -167,15 +164,13 @@ class SmolLMv3WithTRM(nn.Module):
         lora_alpha: int = 32,
         lora_dropout: float = 0.1,
         num_latents: int = 256,  # For 65k context, use 256 latents (256x compression)
-        trm_kwargs: Optional[dict] = None
+        trm_kwargs: dict | None = None,
     ):
         super().__init__()
 
         # Load base model
         self.base_model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto"
+            model_name, torch_dtype=torch.bfloat16, device_map="auto"
         )
 
         # Apply LoRA if requested
@@ -186,7 +181,7 @@ class SmolLMv3WithTRM(nn.Module):
                 lora_alpha=lora_alpha,
                 lora_dropout=lora_dropout,
                 target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-                bias="none"
+                bias="none",
             )
             self.base_model = get_peft_model(self.base_model, lora_config)
             print("LoRA adapters applied. Trainable parameters:")
@@ -209,11 +204,7 @@ class SmolLMv3WithTRM(nn.Module):
 
         # Initialize TRM with latent attention compression
         trm_kwargs = trm_kwargs or {}
-        self.trm = HiddenStateTRM(
-            hidden_size=hidden_size,
-            num_latents=num_latents,
-            **trm_kwargs
-        )
+        self.trm = HiddenStateTRM(hidden_size=hidden_size, num_latents=num_latents, **trm_kwargs)
 
         # Freeze base model (except LoRA adapters if used)
         if not use_lora:
@@ -223,9 +214,9 @@ class SmolLMv3WithTRM(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        use_trm: bool = True
+        attention_mask: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        use_trm: bool = True,
     ):
         """
         Forward pass with optional TRM processing using sliding window.
@@ -242,7 +233,7 @@ class SmolLMv3WithTRM(nn.Module):
             attention_mask=attention_mask,
             labels=labels,
             output_hidden_states=True,
-            return_dict=True
+            return_dict=True,
         )
 
         if not use_trm or not self.training:
@@ -268,17 +259,16 @@ class SmolLMv3WithTRM(nn.Module):
 
         if labels is not None:
             # Ensure dimensions match: TRM logits should match the shifted labels
-            shifted_labels = labels[:, self.trm.num_latents:]
+            shifted_labels = labels[:, self.trm.num_latents :]
             # Make sure TRM logits and shifted labels have the same sequence length
             if trm_logits.size(1) != shifted_labels.size(1):
                 # If dimensions don't match, adjust TRM logits to match shifted labels
-                trm_logits = trm_logits[:, :shifted_labels.size(1), :]
+                trm_logits = trm_logits[:, : shifted_labels.size(1), :]
 
             # Compute loss
             loss_fct = nn.CrossEntropyLoss()
             trm_loss = loss_fct(
-                trm_logits.reshape(-1, trm_logits.size(-1)),
-                shifted_labels.reshape(-1)
+                trm_logits.reshape(-1, trm_logits.size(-1)), shifted_labels.reshape(-1)
             )
 
             # Combine with base loss
@@ -291,7 +281,7 @@ class SmolLMv3WithTRM(nn.Module):
         prompt: str,
         max_new_tokens: int = 256,
         temperature: float = 0.7,
-        do_sample: bool = True
+        do_sample: bool = True,
     ) -> str:
         """
         Generate text with TRM-enhanced reasoning.
@@ -307,10 +297,10 @@ class SmolLMv3WithTRM(nn.Module):
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 do_sample=do_sample,
-                pad_token_id=self.tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.eos_token_id,
             )
 
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        return str(self.tokenizer.decode(outputs[0], skip_special_tokens=False))
 
 
 def create_smollm_trm_model(
@@ -318,7 +308,7 @@ def create_smollm_trm_model(
     use_lora: bool = True,
     lora_r: int = 16,
     num_latents: int = 256,
-    **kwargs
+    **kwargs,
 ) -> SmolLMv3WithTRM:
     """
     Factory function to create SmolLMv3 + TRM model with latent attention compression
@@ -338,9 +328,5 @@ def create_smollm_trm_model(
         Integrated model with latent attention compression and sliding window
     """
     return SmolLMv3WithTRM(
-        model_name=model_name,
-        use_lora=use_lora,
-        lora_r=lora_r,
-        num_latents=num_latents,
-        **kwargs
+        model_name=model_name, use_lora=use_lora, lora_r=lora_r, num_latents=num_latents, **kwargs
     )

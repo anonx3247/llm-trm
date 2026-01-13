@@ -7,7 +7,6 @@ variable-length sequences via cross-attention.
 
 import torch
 import torch.nn as nn
-from typing import Optional
 
 
 class LatentAttentionCompressor(nn.Module):
@@ -26,13 +25,7 @@ class LatentAttentionCompressor(nn.Module):
     - Interpretable (attention weights show what's compressed)
     """
 
-    def __init__(
-        self,
-        hidden_size: int,
-        num_latents: int,
-        n_heads: int = 8,
-        dropout: float = 0.1
-    ):
+    def __init__(self, hidden_size: int, num_latents: int, n_heads: int = 8, dropout: float = 0.1):
         super().__init__()
 
         self.hidden_size = hidden_size
@@ -45,10 +38,7 @@ class LatentAttentionCompressor(nn.Module):
 
         # Compression: latents attend to full sequence
         self.compress_attn = nn.MultiheadAttention(
-            embed_dim=hidden_size,
-            num_heads=n_heads,
-            dropout=dropout,
-            batch_first=True
+            embed_dim=hidden_size, num_heads=n_heads, dropout=dropout, batch_first=True
         )
         self.compress_norm = nn.LayerNorm(hidden_size)
         self.compress_ff = nn.Sequential(
@@ -56,11 +46,11 @@ class LatentAttentionCompressor(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size * 4, hidden_size),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
         self.compress_ff_norm = nn.LayerNorm(hidden_size)
 
-    def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
         """
         Compress variable-length sequence to fixed number of latents.
 
@@ -81,13 +71,10 @@ class LatentAttentionCompressor(nn.Module):
         # Convert attention_mask to key_padding_mask format (True for positions to ignore)
         key_padding_mask = None
         if attention_mask is not None:
-            key_padding_mask = (attention_mask == 0)  # True for padding positions
+            key_padding_mask = attention_mask == 0  # True for padding positions
 
         attn_out, _ = self.compress_attn(
-            query=latents,
-            key=x,
-            value=x,
-            key_padding_mask=key_padding_mask
+            query=latents, key=x, value=x, key_padding_mask=key_padding_mask
         )
         latents = self.compress_norm(latents + attn_out)
 

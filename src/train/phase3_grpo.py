@@ -25,14 +25,15 @@ TODO: Implement GRPO training
       https://huggingface.co/docs/trl/main/en/grpo_trainer
 """
 
-import torch
-from typing import Optional
 from dataclasses import dataclass
+
+import torch
 
 
 @dataclass
 class Phase3Config:
     """Configuration for Phase 3 GRPO training"""
+
     # Model
     model_name: str = "HuggingFaceTB/SmolLM3-3B"
     trm_checkpoint: str = "./checkpoints/phase2/best.pt"
@@ -99,10 +100,7 @@ class GRPOTrainer:
         raise NotImplementedError("Reward computation not implemented")
 
     def _grpo_loss(
-        self,
-        log_probs: torch.Tensor,
-        rewards: torch.Tensor,
-        group_size: int
+        self, log_probs: torch.Tensor, rewards: torch.Tensor, group_size: int
     ) -> torch.Tensor:
         """
         Compute GRPO loss.
@@ -129,7 +127,7 @@ class GRPOTrainer:
         )
 
 
-def run_phase3_training(config: Optional[Phase3Config] = None) -> None:
+def run_phase3_training(config: Phase3Config | None = None) -> None:
     """
     Main entry point for Phase 3 GRPO training.
 

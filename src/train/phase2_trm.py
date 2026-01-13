@@ -26,16 +26,15 @@ Usage:
 TODO: Implement training logic following TRM paper
 """
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional
 from dataclasses import dataclass
+
+import torch
 
 
 @dataclass
 class Phase2Config:
     """Configuration for Phase 2 TRM training"""
+
     # Data
     data_path: str = "./data/hidden_pairs"
 
@@ -112,10 +111,7 @@ class TRMIterationTrainer:
         raise NotImplementedError("EMA not implemented")
 
     def _compute_loss(
-        self,
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor,
-        halt_prob: torch.Tensor
+        self, y_pred: torch.Tensor, y_true: torch.Tensor, halt_prob: torch.Tensor
     ) -> torch.Tensor:
         """
         Compute training loss.
@@ -129,9 +125,7 @@ class TRMIterationTrainer:
         raise NotImplementedError("Loss computation not implemented")
 
     def _deep_supervision_step(
-        self,
-        hidden_pre: torch.Tensor,
-        hidden_post: torch.Tensor
+        self, hidden_pre: torch.Tensor, hidden_post: torch.Tensor
     ) -> torch.Tensor:
         """
         Single deep supervision training step.
@@ -173,7 +167,7 @@ class TRMIterationTrainer:
         )
 
 
-def run_phase2_training(config: Optional[Phase2Config] = None) -> None:
+def run_phase2_training(config: Phase2Config | None = None) -> None:
     """
     Main entry point for Phase 2 training.
 
