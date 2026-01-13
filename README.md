@@ -1,100 +1,58 @@
 # LLM-TRM: Recursive Reasoning for Language Models
 
-Add iterative reasoning capabilities to small language models using Tiny Recursive Models (TRM) with minimal parameter overhead.
+Add iterative reasoning capabilities to language models using Tiny Recursive Models (TRM) with minimal parameter overhead.
 
 **Based on:** "Less is More: Recursive Reasoning with Tiny Networks" by Alexia Jolicoeur-Martineau
 
 ## Overview
 
 This implementation integrates TRM with SmolLMv3-3B using:
-- **LoRA adapters** for efficient LLM fine-tuning (~0.5% params)
-- **Latent attention compression** via Perceiver-style cross-attention (~0.1% params)
+- **LoRA adapters** for efficient LLM fine-tuning
+- **Latent attention compression** via Perceiver-style cross-attention (256x compression)
 - **Recursive reasoning** in compressed hidden state space
 
-**Key Innovation:** Handles SmolLMv3's 65k token context by compressing to 256 learned latent queries via cross-attention, achieving 256x compression with variable-length support.
-
+**Key Innovation:** TRM reasons in latent space instead of generating chain-of-thought tokens, achieving effective depth of 672 layers with only a 2-layer network.
 
 ## Architecture
 
 ```
-Input → SmolLMv3 (frozen) → LoRA adapters
-                                ↓
-                     Hidden States [B, L, 3072] (L up to 65k)
-                                ↓
-            Compress: CrossAttention(256 latents, hidden) → [B, 256, 3072]
-                                ↓
-            TRM Recursive Reasoning (40+ iterations on compressed space)
-                                ↓
-            Sliding Window: Drop first 256, Append 256 TRM states → [B, L, 3072]
-                                ↓
-                     Hidden States (with TRM reasoning at end)
-                                ↓
-                    Continue Generation
+Input → SmolLMv3 → Hidden States [B, L, 3072]
+                          ↓
+         Compress via CrossAttention → [B, 256, 3072]
+                          ↓
+              TRM Recursive Reasoning
+              (n=6 latent steps × T=3 deep × N_sup=16 supervision)
+                          ↓
+         Sliding Window Output → [B, L, 3072]
+                          ↓
+                 Continue Generation
 ```
-
-### When `<think>` Token Appears
-
-Model learns to output `<think>` token when it needs to reason:
-1. `<think>` token triggers TRM processing
-2. Hidden states are compressed via learned latent queries (variable → 256 latents)
-3. TRM iterates 40+ times in compressed space (256 reasoning states, not 65k tokens!)
-4. Sliding window: Drop first 256 positions, append 256 TRM reasoning states
-5. Model generates answer conditioned on TRM reasoning
 
 ## Installation
 
 ```bash
-pip install torch transformers peft tqdm
-# or with uv
+uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
 ## Quick Start
 
-### Standalone TRM (for supervised learning)
-
 ```python
-from src.trm import create_trm_model
-import torch
-
-model = create_trm_model(
-    vocab_size=1000,
-    d_model=256,
-    n_layers=2,
-    n_latent_steps=6,
-    n_deep_recursions=3,
-    n_supervision_steps=16
-)
-
-# Training
-x = torch.randint(0, 1000, (4, 64))
-y = torch.randint(0, 1000, (4, 64))
-loss = model.compute_loss(x, y)
-loss.backward()
-```
-
-### SmolLMv3 + TRM Integration
-
-```python
-from src.integration import create_smollm_trm_model
+from src.models import create_smollm_trm_model
 
 model = create_smollm_trm_model(
     model_name="HuggingFaceTB/SmolLM3-3B",
     use_lora=True,
-    lora_r=16,
-    num_latents=256,  # Compress up to 65k → 256 latents (256x!)
+    num_latents=256,
     trm_kwargs={
         "n_layers": 2,
-        "n_latent_steps": 4,
-        "n_deep_recursions": 2,
-        "n_supervision_steps": 4,
-        "compression_heads": 8  # Attention heads for compression
+        "n_latent_steps": 6,
+        "n_deep_recursions": 3,
+        "n_supervision_steps": 8,
     }
 )
 
-# Use in training
 outputs = model(input_ids=x, labels=y, use_trm=True)
-loss = outputs.loss
 ```
 
 ## Project Structure
@@ -102,247 +60,74 @@ loss = outputs.loss
 ```
 llm-trm/
 ├── src/
-│   ├── trm/
-│   │   ├── __init__.py
-│   │   └── base.py          # Core TRM implementation
-│   └── integration/
-│       ├── __init__.py
-│       └── smollm.py         # SmolLMv3 + TRM with compression
-├── examples/
-│   ├── train_standalone.py  # Train standalone TRM
-│   └── train_smollm.py      # Train SmolLMv3 + TRM
+│   ├── models/
+│   │   ├── MODELS.md        # Model documentation
+│   │   ├── trm.py           # Core TRM implementation
+│   │   ├── compression.py   # Latent attention compressor
+│   │   └── smollm.py        # SmolLMv3 + TRM integration
+│   └── train/
+│       ├── phase1_compressor.py  # Compressor pretraining
+│       ├── phase2_datagen.py     # Generate hidden state pairs
+│       ├── phase2_trm.py         # TRM iteration training
+│       └── phase3_grpo.py        # GRPO training (placeholder)
+├── papers/
+│   └── less-is-more-TRM/    # TRM paper source
+├── colab_notebook.ipynb     # Self-contained notebook for Colab
 ├── requirements.txt
 └── README.md
 ```
 
-## Training
+## Training Pipeline
 
-### Quick Start with PyTorch Lightning
+Training consists of three phases:
 
+### Phase 1: Compressor Pretraining
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Login to wandb
-wandb login
-
-# Train with default settings
-python train_lightning.py
-
-# Or customize training
-python train_lightning.py \
-  --batch_size 2 \
-  --num_epochs 10 \
-  --learning_rate 2e-4 \
-  --num_latents 256 \
-  --wandb_project "my-project" \
-  --wandb_name "experiment-1"
+python -m src.train.phase1_compressor --stage 1a  # Identity training
+python -m src.train.phase1_compressor --stage 1b  # CoT finetuning
 ```
 
-### Using Jupyter Notebook
-
-For interactive training or Colab:
-
+### Phase 2: TRM Iteration Training
 ```bash
-jupyter notebook train_notebook.ipynb
+# Generate hidden state pairs from thinking trajectories
+python -m src.train.phase2_datagen --dataset gsm8k --output_dir ./data/hidden_pairs
+
+# Train TRM to map hidden_pre -> hidden_post
+python -m src.train.phase2_trm --data_path ./data/hidden_pairs
 ```
 
-Or upload `train_notebook.ipynb` to Google Colab.
-
-### Features
-
-- **Automatic checkpointing**: Saves top 3 models based on validation loss
-- **Early stopping**: Stops if validation loss doesn't improve for 3 epochs
-- **Weights & Biases logging**: Track metrics, visualize training
-- **Multi-GPU support**: Automatically uses all available GPUs
-- **Mixed precision**: bfloat16 for faster training
-- **Gradient accumulation**: Simulate larger batch sizes
-
-### Training on Your Dataset
-
-1. Prepare JSON dataset:
-```json
-[
-  {"question": "What is 15 × 23?", "answer": "345"},
-  {"question": "If x + 5 = 12, what is x?", "answer": "x = 7"}
-]
-```
-
-2. Train:
+### Phase 3: GRPO Training (Placeholder)
 ```bash
-python train_lightning.py --dataset_path your_data.json
+python -m src.train.phase3_grpo --trm_checkpoint ./checkpoints/phase2/best.pt
 ```
 
-### Resume Training
+## Using Colab
 
-```bash
-python train_lightning.py --resume ./checkpoints/last.ckpt
-```
+Upload `colab_notebook.ipynb` to Google Colab. All code is inlined - no external imports needed.
 
-## How It Works
+## Key Hyperparameters
 
-### 1. Latent Attention Compression (Perceiver-Style)
+From the TRM paper:
 
-```python
-class LatentAttentionCompressor(nn.Module):
-    def __init__(self, hidden_size: int, num_latents: int):
-        # Learned latent queries
-        self.latent_queries = nn.Parameter(torch.randn(num_latents, hidden_size))
-        
-        # Cross-attention for compression
-        self.compress_attn = nn.MultiheadAttention(...)
-    
-    def forward(self, x, attention_mask):
-        # Latents attend to input sequence (variable length!)
-        latents = self.latent_queries.unsqueeze(0).expand(batch_size, -1, -1)
-        compressed = self.compress_attn(query=latents, key=x, value=x)
-        return compressed  # [B, 256, D] regardless of input length
-```
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `n_layers` | 2 | Transformer layers (less is more!) |
+| `n_latent_steps` | 6 | Latent reasoning iterations (n) |
+| `n_deep_recursions` | 3 | Deep recursions (T) |
+| `n_supervision_steps` | 16 | Max supervision steps (N_sup) |
+| `num_latents` | 256 | Compression ratio (256x) |
+| `ema_decay` | 0.999 | Critical for stability |
 
-**Why this works:** 
-- **Variable length:** Works with 100 or 65k tokens seamlessly
-- **Semantic:** Attention focuses on important information
-- **Proven:** Same approach as Perceiver, Q-Former (BLIP-2), Flamingo
-- **Efficient:** No expansion network needed with sliding window
+**Effective depth:** `n_layers × (n+1) × T × N_sup = 2 × 7 × 3 × 16 = 672 layers`
 
-### 2. Sliding Window Output
+## References
 
-Instead of expanding back to original length, use sliding window:
-
-```python
-# After TRM reasoning: [B, M, D] where M=256
-# Original hidden states: [B, L, D]
-
-# Sliding window: Drop first M, append M TRM states
-output = torch.cat([
-    hidden_states[:, M:, :],  # Drop first 256 positions
-    trm_reasoning            # Append 256 TRM reasoning states
-], dim=1)  # Result: [B, L, D]
-```
-
-**Why this works:**
-- **No expansion network:** Saves ~1M parameters
-- **Natural labels:** Labels align with last positions (TRM outputs)
-- **Reasoning as "hidden tokens":** TRM generates states like new tokens
-- **Context rarely lost:** First 256 positions usually less critical
-
-### 3. Recursive Reasoning
-
-Three levels of recursion:
-
-**Latent Recursion** (n=6 steps):
-```python
-for _ in range(n):
-    z = net(x + y + z)  # Update reasoning
-y = net(y + z)          # Update answer
-```
-
-**Deep Recursion** (T=2 iterations):
-```python
-# T-1 without gradients (fast)
-with torch.no_grad():
-    y, z = latent_recursion(x, y, z)
-
-# 1 with gradients (for backprop)
-y, z = latent_recursion(x, y, z)
-```
-
-**Deep Supervision** (N_sup=4 steps):
-```python
-for step in range(N_sup):
-    y, z = deep_recursion(x, y, z)
-    compute_loss(y, target)
-    y, z = y.detach(), z.detach()  # Carry forward
-```
-
-**Total effective depth:** 2 layers × (6+1) × 2 × 4 = **112 layers**
-
-### 4. Training Strategy
-
-1. **Freeze SmolLMv3** - preserve pre-trained knowledge
-2. **Train LoRA adapters** - learn when to use `<think>` token
-3. **Train TRM** - learn to generate reasoning in hidden space
-4. **Train compression** - learn to aggregate sequence info
-
-All trained end-to-end simultaneously! No expansion network needed with sliding window.
-
-## Hyperparameters
-
-Key parameters to tune:
-
-```python
-{
-    # Compression
-    "num_latents": 256,       # 65k → 256 (256x compression, recommended)
-                              # Try 128 (512x) if memory constrained
-                              # Try 512 (128x) if quality issues
-    "compression_heads": 8,   # Attention heads for compression
-    
-    # TRM
-    "n_layers": 2,            # Number of transformer layers
-    "n_latent_steps": 4,      # Iterations for reasoning
-    "n_deep_recursions": 2,   # T recursions (1 with grad)
-    "n_supervision_steps": 4, # Deep supervision steps
-    
-    # LoRA
-    "lora_r": 16,             # LoRA rank
-    "lora_alpha": 32,         # LoRA alpha
-    
-    # Training
-    "learning_rate": 2e-4,    # Train end-to-end (compressor + TRM + LoRA)
-    "batch_size": 4,          # Smaller due to 65k context
-    "gradient_clip": 1.0
-}
-```
-
-**Effective depth per step:** `T × (n + 1) × n_layers`  
-**Example:** 2 × 5 × 2 = 20 layers per supervision step
-
-## Dataset Format
-
-For reasoning tasks:
-
-```json
-{
-  "question": "What is 15 × 23?",
-  "answer": "345"
-}
-```
-
-Format as:
-```
-Question: {question}
-Answer: <think> {answer}
-```
-
-The model learns to output `<think>` to trigger TRM reasoning, then generate the answer.
-
-## Tips
-
-1. **Use EMA** - Exponential Moving Average for stability
-2. **Clip gradients** - Essential due to recursive nature
-3. **Start small** - Begin with GSM8K before AIME
-4. **Monitor `<think>`** - Track how often model uses reasoning
-5. **Heavy augmentation** - Crucial for small datasets
-6. **Train end-to-end** - Compressor + TRM + LoRA together (no pre-training needed)
-7. **Monitor compression** - Log reconstruction error, but don't optimize for it
-8. **Use 256 latents** - Sweet spot for 65k context (adjust if memory constrained)
-
-## Key Design Decisions
-
-### Sliding Window vs Expansion
-- **No expansion network:** TRM outputs directly replace oldest positions via sliding window
-- **Saves 1M parameters:** Simpler, faster, more elegant
-- **Natural training:** Labels align directly with TRM outputs
-
-### Single `<think>` Token
-- **Simple trigger:** `<think>` activates TRM reasoning
-- **No end marker:** Model naturally continues after reasoning
-- **Hidden space reasoning:** TRM generates reasoning states, not text tokens
+- **TRM Paper:** `papers/less-is-more-TRM/paper.tex`
+- **SmolLM3 Blog:** https://huggingface.co/blog/smollm3
+- **SmolLM Repo:** https://github.com/huggingface/smollm
 
 ## Citation
 
-Original TRM paper:
 ```bibtex
 @article{jolicoeur2025trm,
   title={Less is More: Recursive Reasoning with Tiny Networks},
