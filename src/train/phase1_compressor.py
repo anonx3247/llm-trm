@@ -15,15 +15,13 @@ Usage:
 TODO: Implement training logic
 """
 
-import torch
-import torch.nn as nn
-from typing import Optional
 from dataclasses import dataclass
 
 
 @dataclass
 class Phase1Config:
     """Configuration for Phase 1 training"""
+
     # Model
     model_name: str = "HuggingFaceTB/SmolLM3-3B"
     hidden_size: int = 3072
@@ -39,7 +37,7 @@ class Phase1Config:
     stage: str = "1a"  # "1a" for identity, "1b" for CoT
 
     # Data
-    dataset_path: Optional[str] = None
+    dataset_path: str | None = None
     max_seq_length: int = 2048
 
     # Output
@@ -107,7 +105,7 @@ class CompressorPretrainer:
             raise ValueError(f"Unknown stage: {self.config.stage}")
 
 
-def run_phase1_training(config: Optional[Phase1Config] = None) -> None:
+def run_phase1_training(config: Phase1Config | None = None) -> None:
     """
     Main entry point for Phase 1 training.
 

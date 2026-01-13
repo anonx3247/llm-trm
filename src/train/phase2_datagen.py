@@ -20,15 +20,15 @@ Usage:
 TODO: Implement data generation logic
 """
 
-import torch
-from typing import Optional, Dict, List
 from dataclasses import dataclass
-from pathlib import Path
+
+import torch
 
 
 @dataclass
 class DataGenConfig:
     """Configuration for hidden state pair generation"""
+
     # Model
     model_name: str = "HuggingFaceTB/SmolLM3-3B"
 
@@ -103,7 +103,7 @@ class ThinkingDataGenerator:
         """
         raise NotImplementedError("Thinking boundary detection not implemented")
 
-    def generate_pairs(self, problems: List[str]) -> Dict[str, torch.Tensor]:
+    def generate_pairs(self, problems: list[str]) -> dict[str, torch.Tensor]:
         """
         Generate hidden state pairs for a list of problems.
 
@@ -126,7 +126,7 @@ class ThinkingDataGenerator:
         raise NotImplementedError("Data generation not implemented")
 
 
-def generate_hidden_state_pairs(config: Optional[DataGenConfig] = None) -> None:
+def generate_hidden_state_pairs(config: DataGenConfig | None = None) -> None:
     """
     Main entry point for generating hidden state pairs.
 

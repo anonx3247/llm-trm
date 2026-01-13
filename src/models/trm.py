@@ -10,7 +10,6 @@ Based on "Less is More: Recursive Reasoning with Tiny Networks" by Alexia Jolico
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
 
 
 class TransformerBlock(nn.Module):
@@ -20,15 +19,11 @@ class TransformerBlock(nn.Module):
         super().__init__()
 
         self.norm1 = nn.RMSNorm(d_model)
-        self.self_attn = nn.MultiheadAttention(
-            d_model, n_heads, dropout=dropout, batch_first=True
-        )
+        self.self_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
 
         self.norm2 = nn.RMSNorm(d_model)
         self.mlp = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
-            nn.GELU(),
-            nn.Linear(d_model * 4, d_model)
+            nn.Linear(d_model, d_model * 4), nn.GELU(), nn.Linear(d_model * 4, d_model)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -54,19 +49,12 @@ class TinyRecursiveNetwork(nn.Module):
     Uses Transformer blocks with self-attention.
     """
 
-    def __init__(
-        self,
-        d_model: int,
-        n_layers: int = 2,
-        n_heads: int = 8,
-        dropout: float = 0.0
-    ):
+    def __init__(self, d_model: int, n_layers: int = 2, n_heads: int = 8, dropout: float = 0.0):
         super().__init__()
 
-        self.layers = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, dropout)
-            for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [TransformerBlock(d_model, n_heads, dropout) for _ in range(n_layers)]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
@@ -86,12 +74,15 @@ class RecursiveReasoningBase(nn.Module):
     - self.halt_head: Halting mechanism
     """
 
+    # Type hints for attributes that subclasses must define
+    net: nn.Module
+    n_latent_steps: int
+    n_deep_recursions: int
+    halt_head: nn.Linear
+
     def latent_recursion(
-        self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        z: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Single latent recursion process:
         1. Update z given x, y, z (n times) - latent reasoning
@@ -119,12 +110,8 @@ class RecursiveReasoningBase(nn.Module):
         return y, z
 
     def run_deep_recursion(
-        self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        z: torch.Tensor,
-        with_gradients: bool = True
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor, with_gradients: bool = True
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Deep recursion with optional gradient computation:
         - Run T-1 recursions without gradients to improve (y, z)
@@ -201,10 +188,7 @@ class TRM(RecursiveReasoningBase):
 
         # Single tiny network for both latent reasoning and prediction refinement
         self.net = TinyRecursiveNetwork(
-            d_model=d_model,
-            n_layers=n_layers,
-            n_heads=n_heads,
-            dropout=dropout
+            d_model=d_model, n_layers=n_layers, n_heads=n_heads, dropout=dropout
         )
 
         # Output head (reverse embedding)
@@ -223,12 +207,8 @@ class TRM(RecursiveReasoningBase):
         nn.init.normal_(self.halt_head.weight, std=0.02)
 
     def deep_recursion(
-        self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        z: torch.Tensor,
-        with_gradients: bool = True
-    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor, with_gradients: bool = True
+    ) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         Deep recursion with output computation for TRM.
 
@@ -247,10 +227,8 @@ class TRM(RecursiveReasoningBase):
         return (y.detach(), z.detach()), logits, halt_prob
 
     def forward(
-        self,
-        x_input: torch.Tensor,
-        return_all_steps: bool = False
-    ) -> torch.Tensor:
+        self, x_input: torch.Tensor, return_all_steps: bool = False
+    ) -> torch.Tensor | list[torch.Tensor]:
         """
         Forward pass through TRM with deep supervision.
 
@@ -273,7 +251,7 @@ class TRM(RecursiveReasoningBase):
         all_logits = []
 
         # Deep supervision loop
-        for step in range(self.n_supervision_steps):
+        for _step in range(self.n_supervision_steps):
             # Perform deep recursion
             (y, z), logits, halt_prob = self.deep_recursion(x, y, z)
 
@@ -290,10 +268,7 @@ class TRM(RecursiveReasoningBase):
             return logits
 
     def compute_loss(
-        self,
-        x_input: torch.Tensor,
-        y_true: torch.Tensor,
-        use_act: bool = True
+        self, x_input: torch.Tensor, y_true: torch.Tensor, use_act: bool = True
     ) -> torch.Tensor:
         """
         Compute training loss with deep supervision.
@@ -315,18 +290,15 @@ class TRM(RecursiveReasoningBase):
         y = torch.zeros_like(x)
         z = torch.zeros_like(x)
 
-        total_loss = 0.0
+        total_loss: torch.Tensor = torch.tensor(0.0, device=x.device)
 
         # Deep supervision loop
-        for step in range(self.n_supervision_steps):
+        for _step in range(self.n_supervision_steps):
             # Perform deep recursion
             (y, z), logits, halt_prob = self.deep_recursion(x, y, z)
 
             # Cross-entropy loss
-            ce_loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y_true.reshape(-1)
-            )
+            ce_loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_true.reshape(-1))
             total_loss += ce_loss
 
             # Halting loss (ACT)
@@ -334,7 +306,7 @@ class TRM(RecursiveReasoningBase):
                 # Check if prediction matches target
                 y_pred = torch.argmax(logits, dim=-1)
                 target_halt = (y_pred == y_true).all(dim=-1).float().unsqueeze(-1)
-                halt_loss = F.binary_cross_entropy(halt_prob.clamp(1e-7, 1-1e-7), target_halt)
+                halt_loss = F.binary_cross_entropy(halt_prob.clamp(1e-7, 1 - 1e-7), target_halt)
                 total_loss += 0.5 * halt_loss
 
             # Early stopping during training
@@ -344,11 +316,7 @@ class TRM(RecursiveReasoningBase):
         return total_loss
 
 
-def create_trm_model(
-    vocab_size: int,
-    d_model: int = 512,
-    **kwargs
-) -> TRM:
+def create_trm_model(vocab_size: int, d_model: int = 512, **kwargs) -> TRM:
     """
     Factory function to create a TRM model with sensible defaults.
 
@@ -360,8 +328,4 @@ def create_trm_model(
     Returns:
         TRM model
     """
-    return TRM(
-        vocab_size=vocab_size,
-        d_model=d_model,
-        **kwargs
-    )
+    return TRM(vocab_size=vocab_size, d_model=d_model, **kwargs)
