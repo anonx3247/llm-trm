@@ -194,7 +194,16 @@ class CompressorPretrainer:
         for param in self.model.parameters():
             param.requires_grad = False
 
-        self._print(f"Model loaded. Hidden size: {self.model.config.hidden_size}")
+        # Get actual hidden size from model (override config if different)
+        actual_hidden_size = self.model.config.hidden_size
+        if self.config.hidden_size != actual_hidden_size:
+            self._print(
+                f"Warning: Config hidden_size ({self.config.hidden_size}) doesn't match "
+                f"model ({actual_hidden_size}). Using model's hidden_size."
+            )
+            self.config.hidden_size = actual_hidden_size
+
+        self._print(f"Model loaded. Hidden size: {actual_hidden_size}")
 
     def _init_compressor(self) -> None:
         """Initialize DimensionCompressor with optional torch.compile"""
