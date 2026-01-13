@@ -1,0 +1,200 @@
+\begin{thebibliography}{38}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[{ARC Prize Foundation}(2025{\natexlab{a}})]{arc_hrm}
+{ARC Prize Foundation}.
+\newblock {The Hidden Drivers of HRM's Performance on ARC-AGI}.
+\newblock \url{https://arcprize.org/blog/hrm-analysis}, 2025{\natexlab{a}}.
+\newblock [Online; accessed 2025-09-15].
+
+\bibitem[{ARC Prize Foundation}(2025{\natexlab{b}})]{arc_prize}
+{ARC Prize Foundation}.
+\newblock {ARC-AGI Leaderboard}.
+\newblock \url{https://arcprize.org/leaderboard}, 2025{\natexlab{b}}.
+\newblock [Online; accessed 2025-09-24].
+
+\bibitem[Bai et~al.(2019)Bai, Kolter, and Koltun]{bai2019deep}
+Bai, S., Kolter, J.~Z., and Koltun, V.
+\newblock Deep equilibrium models.
+\newblock \emph{Advances in neural information processing systems}, 32, 2019.
+
+\bibitem[Bai \& Melas-Kyriazi(2024)Bai and Melas-Kyriazi]{bai2024fixed}
+Bai, X. and Melas-Kyriazi, L.
+\newblock Fixed point diffusion models.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp.\  9430--9440, 2024.
+
+\bibitem[Brock et~al.(2018)Brock, Donahue, and Simonyan]{brock2018large}
+Brock, A., Donahue, J., and Simonyan, K.
+\newblock Large scale gan training for high fidelity natural image synthesis.
+\newblock \emph{arXiv preprint arXiv:1809.11096}, 2018.
+
+\bibitem[Chollet(2019)]{chollet2019measure}
+Chollet, F.
+\newblock On the measure of intelligence.
+\newblock \emph{arXiv preprint arXiv:1911.01547}, 2019.
+
+\bibitem[Chollet et~al.(2025)Chollet, Knoop, Kamradt, Landers, and Pinkard]{chollet2025arc}
+Chollet, F., Knoop, M., Kamradt, G., Landers, B., and Pinkard, H.
+\newblock Arc-agi-2: A new challenge for frontier ai reasoning systems.
+\newblock \emph{arXiv preprint arXiv:2505.11831}, 2025.
+
+\bibitem[Chowdhery et~al.(2023)Chowdhery, Narang, Devlin, Bosma, Mishra, Roberts, Barham, Chung, Sutton, Gehrmann, et~al.]{chowdhery2023palm}
+Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., Barham, P., Chung, H.~W., Sutton, C., Gehrmann, S., et~al.
+\newblock Palm: Scaling language modeling with pathways.
+\newblock \emph{Journal of Machine Learning Research}, 24\penalty0 (240):\penalty0 1--113, 2023.
+
+\bibitem[Dillion(2025)]{tdoku}
+Dillion, T.
+\newblock Tdoku: A fast sudoku solver and generator.
+\newblock \url{https://t-dillon.github.io/tdoku/}, 2025.
+
+\bibitem[Elman(1990)]{elman1990finding}
+Elman, J.~L.
+\newblock Finding structure in time.
+\newblock \emph{Cognitive science}, 14\penalty0 (2):\penalty0 179--211, 1990.
+
+\bibitem[Fedus et~al.(2022)Fedus, Zoph, and Shazeer]{fedus2022switch}
+Fedus, W., Zoph, B., and Shazeer, N.
+\newblock Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity.
+\newblock \emph{Journal of Machine Learning Research}, 23\penalty0 (120):\penalty0 1--39, 2022.
+
+\bibitem[Geng \& Kolter(2023)Geng and Kolter]{geng2023torchdeq}
+Geng, Z. and Kolter, J.~Z.
+\newblock Torchdeq: A library for deep equilibrium models.
+\newblock \emph{arXiv preprint arXiv:2310.18605}, 2023.
+
+\bibitem[Hendrycks \& Gimpel(2016)Hendrycks and Gimpel]{hendrycks2016gaussian}
+Hendrycks, D. and Gimpel, K.
+\newblock Gaussian error linear units (gelus).
+\newblock \emph{arXiv preprint arXiv:1606.08415}, 2016.
+
+\bibitem[Jang et~al.(2023)Jang, Kim, and Ahn]{jang2023hierarchical}
+Jang, Y., Kim, D., and Ahn, S.
+\newblock Hierarchical graph generation with k2-trees.
+\newblock In \emph{ICML 2023 Workshop on Structured Probabilistic Inference Generative Modeling}, 2023.
+
+\bibitem[Kaplan et~al.(2020)Kaplan, McCandlish, Henighan, Brown, Chess, Child, Gray, Radford, Wu, and Amodei]{kaplan2020scaling}
+Kaplan, J., McCandlish, S., Henighan, T., Brown, T.~B., Chess, B., Child, R., Gray, S., Radford, A., Wu, J., and Amodei, D.
+\newblock Scaling laws for neural language models.
+\newblock \emph{arXiv preprint arXiv:2001.08361}, 2020.
+
+\bibitem[Kingma \& Ba(2014)Kingma and Ba]{kingma2014adam}
+Kingma, D.~P. and Ba, J.
+\newblock Adam: A method for stochastic optimization.
+\newblock \emph{arXiv preprint arXiv:1412.6980}, 2014.
+
+\bibitem[Krantz \& Parks(2002)Krantz and Parks]{krantz2002implicit}
+Krantz, S.~G. and Parks, H.~R.
+\newblock \emph{The implicit function theorem: history, theory, and applications}.
+\newblock Springer Science \& Business Media, 2002.
+
+\bibitem[LeCun(1985)]{lecun1985procedure}
+LeCun, Y.
+\newblock Une procedure d'apprentissage ponr reseau a seuil asymetrique.
+\newblock \emph{Proceedings of cognitiva 85}, pp.\  599--604, 1985.
+
+\bibitem[Lehnert et~al.(2024)Lehnert, Sukhbaatar, Su, Zheng, Mcvay, Rabbat, and Tian]{lehnert2024beyond}
+Lehnert, L., Sukhbaatar, S., Su, D., Zheng, Q., Mcvay, P., Rabbat, M., and Tian, Y.
+\newblock Beyond a*: Better planning with transformers via search dynamics bootstrapping.
+\newblock \emph{arXiv preprint arXiv:2402.14083}, 2024.
+
+\bibitem[Lillicrap \& Santoro(2019)Lillicrap and Santoro]{lillicrap2019backpropagation}
+Lillicrap, T.~P. and Santoro, A.
+\newblock Backpropagation through time and the brain.
+\newblock \emph{Current opinion in neurobiology}, 55:\penalty0 82--89, 2019.
+
+\bibitem[Loshchilov \& Hutter(2017)Loshchilov and Hutter]{loshchilov2017decoupled}
+Loshchilov, I. and Hutter, F.
+\newblock Decoupled weight decay regularization.
+\newblock \emph{arXiv preprint arXiv:1711.05101}, 2017.
+
+\bibitem[Moskvichev et~al.(2023)Moskvichev, Odouard, and Mitchell]{moskvichev2023conceptarc}
+Moskvichev, A., Odouard, V.~V., and Mitchell, M.
+\newblock The conceptarc benchmark: Evaluating understanding and generalization in the arc domain.
+\newblock \emph{arXiv preprint arXiv:2305.07141}, 2023.
+
+\bibitem[Palm et~al.(2018)Palm, Paquet, and Winther]{palm2018recurrent}
+Palm, R., Paquet, U., and Winther, O.
+\newblock Recurrent relational networks.
+\newblock \emph{Advances in neural information processing systems}, 31, 2018.
+
+\bibitem[Park(2018)]{sudoku2018}
+Park, K.
+\newblock Can convolutional neural networks crack sudoku puzzles?
+\newblock \url{https://github.com/Kyubyong/sudoku}, 2018.
+
+\bibitem[Prieto et~al.(2025)Prieto, Barsbey, Mediano, and Birdal]{prieto2025grokking}
+Prieto, L., Barsbey, M., Mediano, P.~A., and Birdal, T.
+\newblock Grokking at the edge of numerical stability.
+\newblock \emph{arXiv preprint arXiv:2501.04697}, 2025.
+
+\bibitem[Rumelhart et~al.(1985)Rumelhart, Hinton, and Williams]{rumelhart1985learning}
+Rumelhart, D.~E., Hinton, G.~E., and Williams, R.~J.
+\newblock Learning internal representations by error propagation.
+\newblock Technical report, 1985.
+
+\bibitem[Shazeer(2020)]{shazeer2020glu}
+Shazeer, N.
+\newblock Glu variants improve transformer.
+\newblock \emph{arXiv preprint arXiv:2002.05202}, 2020.
+
+\bibitem[Shazeer et~al.(2017)Shazeer, Mirhoseini, Maziarz, Davis, Le, Hinton, and Dean]{shazeer2017outrageously}
+Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le, Q., Hinton, G., and Dean, J.
+\newblock Outrageously large neural networks: The sparsely-gated mixture-of-experts layer.
+\newblock \emph{arXiv preprint arXiv:1701.06538}, 2017.
+
+\bibitem[Snell et~al.(2024)Snell, Lee, Xu, and Kumar]{snell2024scaling}
+Snell, C., Lee, J., Xu, K., and Kumar, A.
+\newblock Scaling llm test-time compute optimally can be more effective than scaling model parameters.
+\newblock \emph{arXiv preprint arXiv:2408.03314}, 2024.
+
+\bibitem[Song \& Ermon(2020)Song and Ermon]{song2020improved}
+Song, Y. and Ermon, S.
+\newblock Improved techniques for training score-based generative models.
+\newblock \emph{Advances in neural information processing systems}, 33:\penalty0 12438--12448, 2020.
+
+\bibitem[Su et~al.(2024)Su, Ahmed, Lu, Pan, Bo, and Liu]{su2024roformer}
+Su, J., Ahmed, M., Lu, Y., Pan, S., Bo, W., and Liu, Y.
+\newblock Roformer: Enhanced transformer with rotary position embedding.
+\newblock \emph{Neurocomputing}, 568:\penalty0 127063, 2024.
+
+\bibitem[Tolstikhin et~al.(2021)Tolstikhin, Houlsby, Kolesnikov, Beyer, Zhai, Unterthiner, Yung, Steiner, Keysers, Uszkoreit, et~al.]{tolstikhin2021mlp}
+Tolstikhin, I.~O., Houlsby, N., Kolesnikov, A., Beyer, L., Zhai, X., Unterthiner, T., Yung, J., Steiner, A., Keysers, D., Uszkoreit, J., et~al.
+\newblock Mlp-mixer: An all-mlp architecture for vision.
+\newblock \emph{Advances in neural information processing systems}, 34:\penalty0 24261--24272, 2021.
+
+\bibitem[Vaswani et~al.(2017)Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, and Polosukhin]{vaswani2017attention}
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.~N., Kaiser, {\L}., and Polosukhin, I.
+\newblock Attention is all you need.
+\newblock \emph{Advances in neural information processing systems}, 30, 2017.
+
+\bibitem[Wang et~al.(2025)Wang, Li, Sun, Chen, Liu, Wu, Lu, Song, and Yadkori]{wang2025hierarchical}
+Wang, G., Li, J., Sun, Y., Chen, X., Liu, C., Wu, Y., Lu, M., Song, S., and Yadkori, Y.~A.
+\newblock Hierarchical reasoning model.
+\newblock \emph{arXiv preprint arXiv:2506.21734}, 2025.
+
+\bibitem[Wei et~al.(2022)Wei, Wang, Schuurmans, Bosma, Xia, Chi, Le, Zhou, et~al.]{wei2022chain}
+Wei, J., Wang, X., Schuurmans, D., Bosma, M., Xia, F., Chi, E., Le, Q.~V., Zhou, D., et~al.
+\newblock Chain-of-thought prompting elicits reasoning in large language models.
+\newblock \emph{Advances in neural information processing systems}, 35:\penalty0 24824--24837, 2022.
+
+\bibitem[Werbos(1974)]{werbos1974beyond}
+Werbos, P.
+\newblock Beyond regression: New tools for prediction and analysis in the behavioral sciences.
+\newblock \emph{PhD thesis, Committee on Applied Mathematics, Harvard University, Cambridge, MA}, 1974.
+
+\bibitem[Werbos(1988)]{werbos1988generalization}
+Werbos, P.~J.
+\newblock Generalization of backpropagation with application to a recurrent gas market model.
+\newblock \emph{Neural networks}, 1\penalty0 (4):\penalty0 339--356, 1988.
+
+\bibitem[Zhang \& Sennrich(2019)Zhang and Sennrich]{zhang2019root}
+Zhang, B. and Sennrich, R.
+\newblock Root mean square layer normalization.
+\newblock \emph{Advances in Neural Information Processing Systems}, 32, 2019.
+
+\end{thebibliography}
