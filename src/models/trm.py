@@ -78,7 +78,7 @@ class RecursiveReasoningBase(nn.Module):
     net: nn.Module
     n_latent_steps: int
     n_deep_recursions: int
-    halt_head: nn.Module
+    halt_head: nn.Linear
 
     def latent_recursion(
         self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor
