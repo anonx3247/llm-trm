@@ -411,13 +411,15 @@ class CompressorPretrainer:
                 )
 
         # Convert streaming dataset to list for DataLoader
+        # IMPORTANT: Use .take() to limit streaming dataset to num_samples
         self._print("Processing dataset...")
+        limited_dataset = dataset.take(self.config.num_samples)
         if self.accelerator.is_main_process:
             data_list: list[dict[str, Any]] = list(
-                tqdm(dataset, total=self.config.num_samples, desc="Loading data")
+                tqdm(limited_dataset, total=self.config.num_samples, desc="Loading data")
             )
         else:
-            data_list = list(dataset)
+            data_list = list(limited_dataset)
 
         dataloader: DataLoader[dict[str, Any]] = DataLoader(
             data_list,  # type: ignore[arg-type]
