@@ -316,11 +316,29 @@ class CompressorPretrainer:
         if self.accelerator.is_main_process:
             print(msg)
 
-    def _strip_compile_prefix(self, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """Strip '_orig_mod.' prefix from state dict keys (added by torch.compile)."""
+    def _adapt_state_dict_keys(
+        self, state_dict: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        """Adapt state dict keys to match current model (handles torch.compile prefix)."""
+        # Check if current model is compiled (has _orig_mod prefix)
+        model_keys = list(self.compressor.state_dict().keys())
+        model_has_prefix = any(k.startswith("_orig_mod.") for k in model_keys)
+        ckpt_has_prefix = any(k.startswith("_orig_mod.") for k in state_dict.keys())
+
+        if model_has_prefix == ckpt_has_prefix:
+            # Keys match, no adaptation needed
+            return state_dict
+
         new_state_dict = {}
         for key, value in state_dict.items():
-            new_key = key.replace("_orig_mod.", "")
+            if model_has_prefix and not ckpt_has_prefix:
+                # Model is compiled, checkpoint is not - add prefix
+                new_key = f"_orig_mod.{key}"
+            elif not model_has_prefix and ckpt_has_prefix:
+                # Model is not compiled, checkpoint is - strip prefix
+                new_key = key.replace("_orig_mod.", "")
+            else:
+                new_key = key
             new_state_dict[new_key] = value
         return new_state_dict
 
@@ -710,7 +728,7 @@ class CompressorPretrainer:
                 )
                 # Handle torch.compile prefix in state dict keys
                 state_dict = checkpoint["compressor"]
-                state_dict = self._strip_compile_prefix(state_dict)
+                state_dict = self._adapt_state_dict_keys(state_dict)
                 self.compressor.load_state_dict(state_dict)
                 checkpoint_loaded = True
             elif ckpt_path:
@@ -728,7 +746,7 @@ class CompressorPretrainer:
                 )
                 # Handle torch.compile prefix in state dict keys
                 state_dict = checkpoint["compressor"]
-                state_dict = self._strip_compile_prefix(state_dict)
+                state_dict = self._adapt_state_dict_keys(state_dict)
                 self.compressor.load_state_dict(state_dict)
                 checkpoint_loaded = True
             else:
