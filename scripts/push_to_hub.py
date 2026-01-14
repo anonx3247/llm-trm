@@ -12,10 +12,18 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 from huggingface_hub import HfApi, create_repo
+
+# Import Phase1Config so pickle can find it when loading checkpoints
+# (checkpoints were saved with Phase1Config from __main__)
+from src.train.phase1_compressor import Phase1Config
+
+# Make it available as __main__.Phase1Config for pickle compatibility
+sys.modules["__main__"].Phase1Config = Phase1Config  # type: ignore[attr-defined]
 
 
 def create_model_card(
