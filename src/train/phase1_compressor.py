@@ -22,6 +22,7 @@ Usage:
 """
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -77,9 +79,15 @@ class Phase1Config:
     # Stage
     stage: str = "1a"  # "1a" for identity, "1b" for CoT
 
+    # Pretrained compressor (for Stage 1b)
+    # Can be HF Hub repo (e.g. "anonx3247/llm-trm-compressor") or local path
+    compressor_checkpoint: str | None = None
+
     # Data
     dataset_name: str = "HuggingFaceFW/fineweb-edu"
     dataset_subset: str = "sample-10BT"  # Use 10BT sample for reasonable size
+    # CoT dataset for Stage 1b
+    cot_dataset_name: str = "teknium/OpenHermes-2.5"
     max_seq_length: int = 512  # Shorter for faster training
     num_samples: int = 50000  # Number of samples to use
     num_workers: int = 4
@@ -308,32 +316,81 @@ class CompressorPretrainer:
         if self.accelerator.is_main_process:
             print(msg)
 
+    def _strip_compile_prefix(self, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Strip '_orig_mod.' prefix from state dict keys (added by torch.compile)."""
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key.replace("_orig_mod.", "")
+            new_state_dict[new_key] = value
+        return new_state_dict
+
     def _load_dataset(self, use_thinking: bool = False) -> DataLoader:
-        """Load dataset for training"""
-        self._print(f"Loading dataset: {self.config.dataset_name}/{self.config.dataset_subset}...")
+        """Load dataset for training.
 
-        dataset = load_dataset(
-            self.config.dataset_name,
-            self.config.dataset_subset,
-            split="train",
-            streaming=True,
-        )
-
-        # Take subset of samples
-        dataset = dataset.take(self.config.num_samples)
-
-        # Process in batches
-        def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
-            texts = [item["text"] for item in batch]
-            return dict(
-                self.tokenizer(
-                    texts,
-                    truncation=True,
-                    max_length=self.config.max_seq_length,
-                    padding="max_length",
-                    return_tensors="pt",
-                )
+        Args:
+            use_thinking: If True, load CoT dataset for Stage 1b
+        """
+        if use_thinking:
+            # Stage 1b: Use CoT dataset with reasoning traces
+            self._print(f"Loading CoT dataset: {self.config.cot_dataset_name}...")
+            dataset = load_dataset(
+                self.config.cot_dataset_name,
+                split="train",
+                streaming=True,
             )
+
+            def extract_text(item: dict[str, Any]) -> str:
+                """Extract text from CoT dataset item."""
+                # Handle OpenHermes format (conversations list)
+                if "conversations" in item:
+                    texts = []
+                    for conv in item["conversations"]:
+                        if isinstance(conv, dict):
+                            texts.append(conv.get("value", ""))
+                    return " ".join(texts)
+                # Handle other formats
+                elif "text" in item:
+                    return item["text"]
+                elif "content" in item:
+                    return item["content"]
+                else:
+                    # Fallback: join all string values
+                    return " ".join(str(v) for v in item.values() if isinstance(v, str))
+
+            def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
+                texts = [extract_text(item) for item in batch]
+                return dict(
+                    self.tokenizer(
+                        texts,
+                        truncation=True,
+                        max_length=self.config.max_seq_length,
+                        padding="max_length",
+                        return_tensors="pt",
+                    )
+                )
+        else:
+            # Stage 1a: Use regular text dataset
+            self._print(
+                f"Loading dataset: {self.config.dataset_name}/{self.config.dataset_subset}..."
+            )
+            dataset = load_dataset(
+                self.config.dataset_name,
+                self.config.dataset_subset,
+                split="train",
+                streaming=True,
+            )
+
+            def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
+                texts = [item["text"] for item in batch]
+                return dict(
+                    self.tokenizer(
+                        texts,
+                        truncation=True,
+                        max_length=self.config.max_seq_length,
+                        padding="max_length",
+                        return_tensors="pt",
+                    )
+                )
 
         # Convert streaming dataset to list for DataLoader
         self._print("Processing dataset...")
@@ -624,14 +681,58 @@ class CompressorPretrainer:
 
     def train_stage_1b(self) -> None:
         """Stage 1b: Finetune on CoT thinking trajectories."""
-        # Load stage 1a checkpoint if available
-        stage1a_path = os.path.join(self.config.output_dir, "stage1a_best.pt")
-        if os.path.exists(stage1a_path):
-            self._print(f"Loading Stage 1a checkpoint from {stage1a_path}")
-            checkpoint = torch.load(stage1a_path, map_location=self.accelerator.device)
-            self.compressor.load_state_dict(checkpoint["compressor"])
-        else:
-            self._print("Warning: No Stage 1a checkpoint found. Training from scratch.")
+        checkpoint_loaded = False
+
+        # Priority 1: Load from specified checkpoint (HF Hub or local path)
+        if self.config.compressor_checkpoint:
+            ckpt_source = self.config.compressor_checkpoint
+
+            # Check if it's an HF Hub repo (contains "/" and doesn't look like a path)
+            if "/" in ckpt_source and not os.path.exists(ckpt_source):
+                self._print(f"Downloading compressor from HF Hub: {ckpt_source}...")
+                try:
+                    ckpt_path = hf_hub_download(repo_id=ckpt_source, filename="compressor.pt")
+                    self._print(f"Downloaded to: {ckpt_path}")
+                except Exception as e:
+                    self._print(f"Failed to download from HF Hub: {e}")
+                    ckpt_path = None
+            else:
+                # Treat as local path
+                ckpt_path = ckpt_source
+
+            if ckpt_path and os.path.exists(ckpt_path):
+                self._print(f"Loading compressor checkpoint from {ckpt_path}")
+                # Fix pickle compatibility: checkpoints may contain Phase1Config
+                # saved from __main__ when running as a script
+                sys.modules["__main__"].Phase1Config = Phase1Config  # type: ignore[attr-defined]
+                checkpoint = torch.load(
+                    ckpt_path, map_location=self.accelerator.device, weights_only=False
+                )
+                # Handle torch.compile prefix in state dict keys
+                state_dict = checkpoint["compressor"]
+                state_dict = self._strip_compile_prefix(state_dict)
+                self.compressor.load_state_dict(state_dict)
+                checkpoint_loaded = True
+            elif ckpt_path:
+                self._print(f"Warning: Checkpoint not found at {ckpt_path}")
+
+        # Priority 2: Fall back to local stage 1a checkpoint
+        if not checkpoint_loaded:
+            stage1a_path = os.path.join(self.config.output_dir, "stage1a_best.pt")
+            if os.path.exists(stage1a_path):
+                self._print(f"Loading Stage 1a checkpoint from {stage1a_path}")
+                # Fix pickle compatibility for local checkpoints too
+                sys.modules["__main__"].Phase1Config = Phase1Config  # type: ignore[attr-defined]
+                checkpoint = torch.load(
+                    stage1a_path, map_location=self.accelerator.device, weights_only=False
+                )
+                # Handle torch.compile prefix in state dict keys
+                state_dict = checkpoint["compressor"]
+                state_dict = self._strip_compile_prefix(state_dict)
+                self.compressor.load_state_dict(state_dict)
+                checkpoint_loaded = True
+            else:
+                self._print("Warning: No checkpoint found. Training from scratch.")
 
         self._run_training_loop("1b")
 
@@ -774,6 +875,14 @@ if __name__ == "__main__":
 
     parser.add_argument("--seed", type=int, default=42)
 
+    # Stage 1b: Pretrained compressor checkpoint
+    parser.add_argument(
+        "--compressor_checkpoint",
+        type=str,
+        default=None,
+        help="HF Hub repo (e.g. 'anonx3247/llm-trm-compressor') or local path to compressor checkpoint for Stage 1b",
+    )
+
     args = parser.parse_args()
 
     config = Phase1Config(
@@ -794,6 +903,7 @@ if __name__ == "__main__":
         wandb_run_name=args.wandb_run_name,
         sweep_d_compressed=args.sweep_d_values,
         seed=args.seed,
+        compressor_checkpoint=args.compressor_checkpoint,
     )
 
     if args.sweep:
