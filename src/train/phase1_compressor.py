@@ -243,8 +243,8 @@ class CompressorPretrainer:
             d_compressed=self.config.d_compressed,
         )
 
-        # Match model dtype
-        self.compressor = self.compressor.to(self.dtype)
+        # Keep compressor in float32 - accelerate handles mixed precision casting
+        # (master weights stay in fp32, forward pass uses autocast)
 
         # Apply torch.compile for faster training (not supported well on MPS)
         if self.config.use_torch_compile and self.device == "cuda":
@@ -513,8 +513,11 @@ class CompressorPretrainer:
                         batch["attention_mask"],
                     )
 
-                    # Move to compressor device
-                    hidden_states = hidden_states.to(self.accelerator.device)
+                    # Move to compressor device and cast to float32
+                    # (accelerate mixed precision keeps master weights in fp32)
+                    hidden_states = hidden_states.to(
+                        device=self.accelerator.device, dtype=torch.float32
+                    )
 
                     # Compute loss and metrics
                     loss, metrics = self._train_step(hidden_states)
