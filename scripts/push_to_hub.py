@@ -113,7 +113,8 @@ def push_to_hub(
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
     print(f"Loading checkpoint from {ckpt_path}...")
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    # weights_only=False needed because checkpoint contains Phase1Config dataclass
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
     # Validate checkpoint
     if "compressor" not in checkpoint:
