@@ -170,8 +170,8 @@ class EMA:
     def __init__(self, model: nn.Module, decay: float = 0.999):
         self.model = model
         self.decay = decay
-        self.shadow = {}
-        self.backup = {}
+        self.shadow: dict[str, torch.Tensor] = {}
+        self.backup: dict[str, torch.Tensor] = {}
 
         # Initialize shadow weights
         for name, param in model.named_parameters():
@@ -303,11 +303,10 @@ class TRMIterationTrainer:
 
     def _init_ema(self) -> None:
         """Initialize EMA if enabled."""
+        self.ema: EMA | None = None
         if self.config.use_ema:
             self.ema = EMA(self.trm, decay=self.config.ema_decay)
             print(f"EMA enabled with decay={self.config.ema_decay}")
-        else:
-            self.ema = None
 
     def _init_wandb(self) -> None:
         """Initialize wandb logging."""
