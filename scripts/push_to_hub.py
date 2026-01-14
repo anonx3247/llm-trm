@@ -29,6 +29,14 @@ from src.train.phase1_compressor import Phase1Config
 sys.modules["__main__"].Phase1Config = Phase1Config  # type: ignore[attr-defined]
 
 
+def _fmt_metric(metrics: dict, key: str, fmt: str = ".4f") -> str:
+    """Format a metric value or return N/A."""
+    val = metrics.get(key)
+    if isinstance(val, float):
+        return f"{val:{fmt}}"
+    return "N/A"
+
+
 def create_model_card(
     checkpoint: dict,
     repo_id: str,
@@ -41,6 +49,12 @@ def create_model_card(
     d_compressed = getattr(config, "d_compressed", "unknown") if config else "unknown"
     hidden_size = getattr(config, "hidden_size", "unknown") if config else "unknown"
     compression_ratio = getattr(config, "compression_ratio", "unknown") if config else "unknown"
+
+    # Format metrics
+    mse = _fmt_metric(metrics, "mse", ".6f")
+    cos_sim = _fmt_metric(metrics, "cosine_similarity")
+    rel_err = _fmt_metric(metrics, "relative_error")
+    var_ratio = _fmt_metric(metrics, "variance_ratio")
 
     card = f"""---
 tags:
@@ -65,10 +79,10 @@ library_name: pytorch
 
 | Metric | Value |
 |--------|-------|
-| MSE Loss | {metrics.get("mse", "N/A"):.6f if isinstance(metrics.get('mse'), float) else 'N/A'} |
-| Cosine Similarity | {metrics.get("cosine_similarity", "N/A"):.4f if isinstance(metrics.get('cosine_similarity'), float) else 'N/A'} |
-| Relative Error | {metrics.get("relative_error", "N/A"):.4f if isinstance(metrics.get('relative_error'), float) else 'N/A'} |
-| Variance Ratio | {metrics.get("variance_ratio", "N/A"):.4f if isinstance(metrics.get('variance_ratio'), float) else 'N/A'} |
+| MSE Loss | {mse} |
+| Cosine Similarity | {cos_sim} |
+| Relative Error | {rel_err} |
+| Variance Ratio | {var_ratio} |
 
 ## Usage
 
