@@ -405,6 +405,44 @@ class SmolLMWithTRMInference(nn.Module):
                 else:
                     next_token = logits.argmax(dim=-1, keepdim=True)
 
+                # Check if <think> was just generated - DON'T append it
+                # TRM will be activated on next forward pass, and we don't want
+                # <think> in the output since TRM replaces the thinking
+                if next_token.item() == self.think_token_id and not self._trm_activated:
+                    # Append <think> temporarily so forward() can detect it
+                    generated_ids = torch.cat([generated_ids, next_token], dim=1)
+                    if attention_mask is not None:
+                        attention_mask = torch.cat(
+                            [attention_mask, torch.ones(1, 1, device=self.device)], dim=1
+                        )
+
+                    # Run forward with <think> to trigger TRM
+                    outputs = self.forward(
+                        input_ids=generated_ids,
+                        attention_mask=attention_mask,
+                    )
+
+                    # Now remove <think> from generated_ids - TRM replaced it
+                    generated_ids = generated_ids[:, :-1]
+                    if attention_mask is not None:
+                        attention_mask = attention_mask[:, :-1]
+
+                    # Update past_key_values from TRM output
+                    past_key_values = outputs.past_key_values
+
+                    # Get next token from TRM output (this is the answer token)
+                    assert outputs.logits is not None
+                    logits = outputs.logits[:, -1, :]
+                    # Mask thinking tokens
+                    logits[:, self.think_token_id] = float("-inf")
+                    logits[:, self.end_think_token_id] = float("-inf")
+
+                    if do_sample and temperature > 0:
+                        probs = torch.softmax(logits / temperature, dim=-1)
+                        next_token = torch.multinomial(probs, num_samples=1)
+                    else:
+                        next_token = logits.argmax(dim=-1, keepdim=True)
+
                 # Append to generated
                 generated_ids = torch.cat([generated_ids, next_token], dim=1)
                 tokens_generated += 1
@@ -418,11 +456,6 @@ class SmolLMWithTRMInference(nn.Module):
                 # Check for EOS
                 if next_token.item() == self.tokenizer.eos_token_id:
                     break
-
-                # Check if <think> was generated and TRM activated
-                if next_token.item() == self.think_token_id and not self._trm_activated:
-                    # TRM will be activated on next forward pass
-                    pass
 
         # Decode
         generated_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=False)
