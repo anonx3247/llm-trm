@@ -306,44 +306,111 @@ class ThinkingDataGenerator:
         """Load reasoning problems from dataset."""
         print(f"Loading dataset: {self.config.dataset}...")
 
-        if self.config.dataset == "gsm8k":
+        # Support comma-separated datasets for mixing
+        datasets_to_load = [d.strip() for d in self.config.dataset.split(",")]
+        samples_per_dataset = self.config.num_samples // len(datasets_to_load)
+
+        all_problems: list[str] = []
+
+        for dataset_name in datasets_to_load:
+            problems = self._load_single_dataset(dataset_name, samples_per_dataset)
+            all_problems.extend(problems)
+            print(f"  {dataset_name}: {len(problems)} problems")
+
+        print(f"Total loaded: {len(all_problems)} problems")
+        return all_problems
+
+    def _load_single_dataset(self, dataset_name: str, num_samples: int) -> list[str]:
+        """Load problems from a single dataset."""
+        problems: list[str] = []
+
+        if dataset_name == "gsm8k":
             dataset = load_dataset(
                 "gsm8k", self.config.dataset_subset, split="train", streaming=True
             )
-            problems = []
             for i, item in enumerate(
-                tqdm(dataset, total=self.config.num_samples, desc="Loading problems")
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
             ):
-                if i >= self.config.num_samples:
+                if i >= num_samples:
                     break
                 problems.append(str(item["question"]))
-        elif self.config.dataset == "math":
+
+        elif dataset_name == "math":
             dataset = load_dataset("lighteval/MATH", split="train", streaming=True)
-            problems = []
             for i, item in enumerate(
-                tqdm(dataset, total=self.config.num_samples, desc="Loading problems")
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
             ):
-                if i >= self.config.num_samples:
+                if i >= num_samples:
                     break
                 problems.append(str(item["problem"]))
-        else:
-            dataset = load_dataset(self.config.dataset, split="train", streaming=True)
-            problems = []
+
+        elif dataset_name == "aime":
+            # AIME competition math - very challenging
+            dataset = load_dataset("qq8933/AIME_1983_2024", split="train", streaming=True)
             for i, item in enumerate(
-                tqdm(dataset, total=self.config.num_samples, desc="Loading problems")
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
             ):
-                if i >= self.config.num_samples:
+                if i >= num_samples:
+                    break
+                problems.append(str(item["Problem"]))
+
+        elif dataset_name == "humaneval":
+            # OpenAI HumanEval coding problems
+            dataset = load_dataset("openai/openai_humaneval", split="test", streaming=True)
+            for i, item in enumerate(
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
+            ):
+                if i >= num_samples:
+                    break
+                # Format as a coding task
+                prompt = item["prompt"]
+                problems.append(f"Complete the following Python function:\n\n{prompt}")
+
+        elif dataset_name == "mbpp":
+            # MBPP coding problems
+            dataset = load_dataset("mbpp", split="train", streaming=True)
+            for i, item in enumerate(
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
+            ):
+                if i >= num_samples:
+                    break
+                text = item["text"]
+                problems.append(f"Write a Python function for the following task:\n\n{text}")
+
+        elif dataset_name == "apps":
+            # APPS coding problems (harder)
+            dataset = load_dataset(
+                "codeparrot/apps", split="train", streaming=True, trust_remote_code=True
+            )
+            for i, item in enumerate(
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
+            ):
+                if i >= num_samples:
+                    break
+                question = item["question"]
+                problems.append(str(question))
+
+        else:
+            # Generic fallback
+            dataset = load_dataset(dataset_name, split="train", streaming=True)
+            for i, item in enumerate(
+                tqdm(dataset, total=num_samples, desc=f"Loading {dataset_name}")
+            ):
+                if i >= num_samples:
                     break
                 if "question" in item:
                     problems.append(str(item["question"]))
                 elif "problem" in item:
                     problems.append(str(item["problem"]))
+                elif "Problem" in item:
+                    problems.append(str(item["Problem"]))
                 elif "text" in item:
                     problems.append(str(item["text"]))
+                elif "prompt" in item:
+                    problems.append(str(item["prompt"]))
                 else:
                     problems.append(str(list(item.values())[0]))
 
-        print(f"Loaded {len(problems)} problems")
         return problems
 
     def _save_checkpoint(self, data: dict[str, Any], checkpoint_idx: int, output_dir: str) -> None:
