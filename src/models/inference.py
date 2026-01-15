@@ -768,10 +768,112 @@ def test_trm_debug() -> None:
     print(f"Full output: {model.tokenizer.decode(generated_ids[0], skip_special_tokens=False)}")
 
 
+def test_comparison() -> None:
+    """Compare outputs: base (no think) vs base (think) vs TRM."""
+    print("=" * 70)
+    print("Comparison Test: Base vs Base+Think vs TRM")
+    print("=" * 70)
+
+    problem = "What is 2 + 2?"
+    max_tokens = 100
+
+    # Load base model (no TRM)
+    print("\n[1/3] Loading base model...")
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    model_name = "HuggingFaceTB/SmolLM3-3B"
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=torch.bfloat16, device_map="auto"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    # Test 1: Base model WITHOUT thinking
+    print("\n" + "=" * 70)
+    print("TEST 1: Base model WITHOUT thinking")
+    print("=" * 70)
+    messages = [{"role": "user", "content": problem}]
+    prompt_no_think = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+    )
+    inputs = tokenizer(prompt_no_think, return_tensors="pt").to(base_model.device)
+    with torch.no_grad():
+        outputs = base_model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=0.0,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    response_no_think = tokenizer.decode(outputs[0], skip_special_tokens=False)
+    # Extract just the assistant response
+    if "<|im_start|>assistant" in response_no_think:
+        response_no_think = response_no_think.split("<|im_start|>assistant")[-1]
+        if "<|im_end|>" in response_no_think:
+            response_no_think = response_no_think.split("<|im_end|}")[0]
+    print(f"Response:\n{response_no_think[:500]}")
+
+    # Test 2: Base model WITH thinking
+    print("\n" + "=" * 70)
+    print("TEST 2: Base model WITH thinking (native CoT)")
+    print("=" * 70)
+    prompt_think = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=True
+    )
+    inputs = tokenizer(prompt_think, return_tensors="pt").to(base_model.device)
+    with torch.no_grad():
+        outputs = base_model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=0.0,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    response_think = tokenizer.decode(outputs[0], skip_special_tokens=False)
+    if "<|im_start|>assistant" in response_think:
+        response_think = response_think.split("<|im_start|>assistant")[-1]
+        if "<|im_end|>" in response_think:
+            response_think = response_think.split("<|im_end|>")[0]
+    print(f"Response:\n{response_think[:500]}")
+
+    # Clean up base model
+    del base_model
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    # Test 3: TRM model
+    print("\n" + "=" * 70)
+    print("TEST 3: TRM model (thinking replaced by TRM)")
+    print("=" * 70)
+    trm_model = SmolLMWithTRMInference()
+    result = trm_model.generate(
+        prompt=problem,
+        max_new_tokens=max_tokens,
+        temperature=0.0,
+        do_sample=False,
+        enable_thinking=True,
+    )
+    response_trm = result["text"]
+    if "<|im_start|>assistant" in response_trm:
+        response_trm = response_trm.split("<|im_start|>assistant")[-1]
+        if "<|im_end|>" in response_trm:
+            response_trm = response_trm.split("<|im_end|>")[0]
+    print(f"Response:\n{response_trm[:500]}")
+    print(f"\nTRM activated: {result['trm_activated']}")
+
+    # Summary
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    print(f"Base (no think): {len(response_no_think)} chars")
+    print(f"Base (think):    {len(response_think)} chars")
+    print(f"TRM:             {len(response_trm)} chars")
+
+
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == "debug":
         test_trm_debug()
+    elif len(sys.argv) > 1 and sys.argv[1] == "compare":
+        test_comparison()
     else:
         test_trm_inference()
