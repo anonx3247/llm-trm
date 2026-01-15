@@ -650,7 +650,8 @@ def test_trm_inference() -> None:
     result = model.generate(
         prompt=problem,
         max_new_tokens=100,
-        temperature=0.7,
+        temperature=0.0,  # Greedy for reproducibility
+        do_sample=False,
         enable_thinking=True,
     )
 
@@ -658,6 +659,109 @@ def test_trm_inference() -> None:
     print(f"\nTokens generated: {result['tokens_generated']}")
     print(f"TRM activated: {result['trm_activated']}")
 
+    # Check for <think> in assistant's response only (not system prompt)
+    if "<|im_start|>assistant" in result["text"]:
+        assistant_response = result["text"].split("<|im_start|>assistant")[-1]
+        if "<think>" in assistant_response:
+            print("\n❌ WARNING: <think> found in assistant response!")
+        else:
+            print("\n✓ Good: No <think> in assistant response")
+
+        # Debug: Show first 50 chars of assistant response
+        clean_response = assistant_response.strip()
+        print(f"\nFirst 100 chars of response: {repr(clean_response[:100])}")
+    else:
+        print("\nCould not find assistant response marker")
+
+
+def test_trm_debug() -> None:
+    """Debug test to understand TRM output tokens."""
+    print("=" * 60)
+    print("TRM Debug Test")
+    print("=" * 60)
+
+    model = SmolLMWithTRMInference()
+    problem = "What is 2 + 2?"
+
+    print(f"\nProblem: {problem}")
+
+    # Generate with detailed token tracking
+    model.reset()
+
+    # Format prompt
+    messages = [{"role": "user", "content": problem}]
+    formatted_prompt = model.tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
+
+    inputs = model.tokenizer(formatted_prompt, return_tensors="pt")
+    input_ids = inputs["input_ids"].to(model.device)
+
+    print(f"Input length: {input_ids.shape[1]} tokens")
+
+    # Generate token by token and track
+    generated_ids = input_ids.clone()
+    generated_tokens = []
+
+    with torch.no_grad():
+        for i in range(20):  # Just 20 tokens for debugging
+            outputs = model.forward(
+                input_ids=generated_ids,
+                attention_mask=None,
+            )
+
+            assert outputs.logits is not None
+            logits = outputs.logits[:, -1, :]
+
+            # Check if <think> would be generated
+            think_prob = torch.softmax(logits, dim=-1)[0, model.think_token_id].item()
+
+            # Get top 5 tokens
+            top5_probs, top5_ids = torch.topk(torch.softmax(logits, dim=-1), 5, dim=-1)
+
+            next_token = logits.argmax(dim=-1, keepdim=True)
+            next_token_str = model.tokenizer.decode(next_token[0])
+
+            # Handle <think> interception
+            if next_token.item() == model.think_token_id and not model._trm_activated:
+                print(f"\nStep {i}: <think> detected! Running TRM...")
+                # Temporarily add <think>
+                generated_ids = torch.cat([generated_ids, next_token], dim=1)
+                # Trigger TRM
+                outputs = model.forward(input_ids=generated_ids, attention_mask=None)
+                # Remove <think>
+                generated_ids = generated_ids[:, :-1]
+                # Get new logits
+                assert outputs.logits is not None
+                logits = outputs.logits[:, -1, :]
+                logits[:, model.think_token_id] = float("-inf")
+                logits[:, model.end_think_token_id] = float("-inf")
+                next_token = logits.argmax(dim=-1, keepdim=True)
+                next_token_str = model.tokenizer.decode(next_token[0])
+                print(f"  TRM activated! Next token: {repr(next_token_str)}")
+
+            generated_ids = torch.cat([generated_ids, next_token], dim=1)
+            generated_tokens.append(next_token_str)
+
+            print(
+                f"Step {i}: {repr(next_token_str):15} "
+                f"(think_prob={think_prob:.4f}, trm_active={model._trm_activated})"
+            )
+
+            if next_token.item() == model.tokenizer.eos_token_id:
+                break
+
+    print(f"\nGenerated tokens: {generated_tokens}")
+    print(f"Full output: {model.tokenizer.decode(generated_ids[0], skip_special_tokens=False)}")
+
 
 if __name__ == "__main__":
-    test_trm_inference()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "debug":
+        test_trm_debug()
+    else:
+        test_trm_inference()
