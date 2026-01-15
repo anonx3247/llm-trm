@@ -257,6 +257,16 @@ class ThinkingDataGenerator:
 
         return results
 
+    def _find_token_sequence_after(
+        self, input_ids: list[int], pattern: list[int], start_pos: int
+    ) -> int | None:
+        """Find the starting position of a token sequence, searching only after start_pos."""
+        pattern_len = len(pattern)
+        for i in range(start_pos, len(input_ids) - pattern_len + 1):
+            if input_ids[i : i + pattern_len] == pattern:
+                return i
+        return None
+
     def _extract_from_hidden_states(
         self,
         generated_ids: list[int],
@@ -274,9 +284,15 @@ class ThinkingDataGenerator:
         Returns:
             (hidden_pre, hidden_post, seq_length, num_thinking_tokens) or None
         """
-        # Find thinking boundaries
-        think_start_pos = self._find_token_sequence(generated_ids, self.think_start_ids)
-        think_end_pos = self._find_token_sequence(generated_ids, self.think_end_ids)
+        # Find thinking boundaries - ONLY in generated portion (after input)
+        # The chat template with enable_thinking=True may include <think></think>
+        # in the prompt instructions, so we must search AFTER input_length
+        think_start_pos = self._find_token_sequence_after(
+            generated_ids, self.think_start_ids, input_length
+        )
+        think_end_pos = self._find_token_sequence_after(
+            generated_ids, self.think_end_ids, input_length
+        )
 
         if think_start_pos is None or think_end_pos is None:
             return None
