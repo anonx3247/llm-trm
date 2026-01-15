@@ -430,10 +430,26 @@ class ThinkingDataGenerator:
         return problems
 
     def _save_checkpoint(self, data: dict[str, Any], checkpoint_idx: int, output_dir: str) -> None:
-        """Save intermediate checkpoint."""
+        """Save intermediate checkpoint with stats."""
         checkpoint_path = os.path.join(output_dir, f"checkpoint_{checkpoint_idx}.pt")
         torch.save(data, checkpoint_path)
-        print(f"\nCheckpoint saved: {checkpoint_path} ({len(data['hidden_pre'])} samples)")
+
+        # Print stats
+        n_samples = len(data["hidden_pre"])
+        seq_lengths = data["seq_lengths"]
+        thinking_tokens = data["num_thinking_tokens"]
+
+        avg_ctx = sum(seq_lengths) / n_samples if n_samples > 0 else 0
+        avg_think = sum(thinking_tokens) / n_samples if n_samples > 0 else 0
+        min_think = min(thinking_tokens) if thinking_tokens else 0
+        max_think = max(thinking_tokens) if thinking_tokens else 0
+
+        print(f"\n{'=' * 60}")
+        print(f"Checkpoint saved: {checkpoint_path}")
+        print(f"  Samples: {n_samples}")
+        print(f"  Avg context length: {avg_ctx:.1f}")
+        print(f"  Avg thinking tokens: {avg_think:.1f} (min: {min_think}, max: {max_think})")
+        print(f"{'=' * 60}")
 
     def _load_checkpoint(self, checkpoint_path: str) -> dict[str, Any]:
         """Load checkpoint to resume generation."""
