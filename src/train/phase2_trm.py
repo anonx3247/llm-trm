@@ -79,7 +79,7 @@ class Phase2Config:
 
     # Halting (ACT - Adaptive Computation Time)
     use_halting: bool = True  # Train halt head during Phase 2
-    halt_threshold: float = 0.95  # Cosine sim threshold for "correct" prediction
+    halt_threshold: float = 0.85  # Cosine sim threshold for "correct" prediction
     halt_loss_weight: float = 0.5  # Weight for halting loss (0.5 in paper)
     early_stop_training: bool = False  # Whether to early stop during training
 
@@ -649,15 +649,17 @@ class TRMSequenceTrainer:
             # Halting loss: train halt_head to predict when output is "correct"
             # "Correct" = cosine_similarity > threshold
             halt_loss = torch.tensor(0.0, device=contexts.device)
+            cos_sim = F.cosine_similarity(reasoning_output, targets, dim=-1)  # [B]
+            halt_target = (cos_sim > self.config.halt_threshold).float().unsqueeze(-1)  # [B, 1]
+
             for halt_prob in halt_probs:
-                # Compute similarity at this step
-                cos_sim = F.cosine_similarity(reasoning_output, targets, dim=-1)  # [B]
-                # Target: halt if similarity exceeds threshold
-                halt_target = (cos_sim > self.config.halt_threshold).float().unsqueeze(-1)  # [B, 1]
-                # BCE loss for halting
+                # BCE loss for halting at each step
                 halt_loss = halt_loss + F.binary_cross_entropy(
                     halt_prob.clamp(1e-7, 1 - 1e-7), halt_target
                 )
+
+            # Average across steps (not sum) to keep scale consistent
+            halt_loss = halt_loss / len(halt_probs)
 
             # Combine losses
             loss = mse_loss + self.config.halt_loss_weight * halt_loss
@@ -860,7 +862,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_halting", action="store_true", default=True, help="Train halt head")
     parser.add_argument("--no_halting", action="store_false", dest="use_halting")
     parser.add_argument(
-        "--halt_threshold", type=float, default=0.95, help="Cosine sim threshold for halt target"
+        "--halt_threshold", type=float, default=0.85, help="Cosine sim threshold for halt target"
     )
     parser.add_argument(
         "--halt_loss_weight", type=float, default=0.5, help="Weight for halting loss"
