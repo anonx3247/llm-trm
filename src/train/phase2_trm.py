@@ -724,6 +724,8 @@ class TRMSequenceTrainer:
                 "cosine_similarity": 0.0,
                 "relative_error": 0.0,
                 "halt_loss": 0.0,
+                "steps_taken": 0.0,
+                "avg_halt_prob": 0.0,
             }
             num_batches = 0
 
@@ -783,6 +785,8 @@ class TRMSequenceTrainer:
                         }
                         if self.config.use_halting:
                             log_dict["train/halt_loss"] = epoch_metrics["halt_loss"] / num_batches
+                            log_dict["train/steps_taken"] = epoch_metrics["steps_taken"] / num_batches
+                            log_dict["train/avg_halt_prob"] = epoch_metrics["avg_halt_prob"] / num_batches
                         wandb.log(log_dict, step=global_step)
 
             # End of epoch
