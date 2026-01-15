@@ -74,7 +74,7 @@ class Phase2Config:
     n_heads: int = 8
     n_latent_steps: int = 6  # n in paper
     n_deep_recursions: int = 3  # T in paper
-    n_supervision_steps: int = 16  # N_sup in paper
+    n_supervision_steps: int = 4  # N_sup in paper (reduced from 16 for stability)
 
     # Training (from TRM paper hyperparameters)
     batch_size: int = 32  # Smaller due to variable length sequences
@@ -144,6 +144,26 @@ class HiddenStateSequenceDataset(Dataset):
         # Stack targets since they're all same size
         self.compressed_post_tensor = torch.stack(self.compressed_post)  # [N, D']
         print(f"Compressed {len(self.compressed_pre)} sequences")
+
+        # Validate data - check for NaN/Inf
+        for i, seq in enumerate(self.compressed_pre):
+            if torch.isnan(seq).any() or torch.isinf(seq).any():
+                print(f"Warning: NaN/Inf in compressed_pre[{i}]")
+        if torch.isnan(self.compressed_post_tensor).any():
+            print("Warning: NaN in compressed_post_tensor")
+
+        # Print data statistics
+        all_pre = torch.cat(self.compressed_pre, dim=0)
+        print(
+            f"  Pre stats: mean={all_pre.mean():.4f}, std={all_pre.std():.4f}, "
+            f"min={all_pre.min():.4f}, max={all_pre.max():.4f}"
+        )
+        print(
+            f"  Post stats: mean={self.compressed_post_tensor.mean():.4f}, "
+            f"std={self.compressed_post_tensor.std():.4f}, "
+            f"min={self.compressed_post_tensor.min():.4f}, "
+            f"max={self.compressed_post_tensor.max():.4f}"
+        )
 
     def __len__(self) -> int:
         return len(self.compressed_pre)
@@ -227,6 +247,9 @@ class SequenceTRM(RecursiveReasoningBase):
         # Halting mechanism (required by base class, trained via RL in Phase 3)
         self.halt_head = nn.Linear(d_compressed, 1)
 
+        # Output normalization for stability
+        self.output_norm = nn.RMSNorm(d_compressed)
+
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None, n_steps: int = 1
     ) -> torch.Tensor:
@@ -306,13 +329,17 @@ class SequenceTRM(RecursiveReasoningBase):
         for i in range(n):
             z = net(x + y + z)  # latent reasoning
         y = net(y + z)  # refine answer (no x!)
+
+        Added normalization after each step for stability.
         """
-        # Latent steps
+        # Latent steps with normalization for stability
         for _ in range(self.n_latent_steps):
             z = self.net(x + y + z, mask=mask)
+            z = self.output_norm(z)  # Normalize to prevent explosion
 
         # Answer refinement (NOTE: no x here, as per paper)
         y = self.net(y + z, mask=mask)
+        y = self.output_norm(y)  # Normalize output
 
         return y, z
 
@@ -614,6 +641,14 @@ class TRMSequenceTrainer:
 
                 # Forward and loss
                 loss, metrics = self._train_step(contexts, targets, mask)
+
+                # NaN detection
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"\nWarning: NaN/Inf loss detected at step {global_step}")
+                    print(f"  Context stats: min={contexts.min():.4f}, max={contexts.max():.4f}")
+                    print(f"  Target stats: min={targets.min():.4f}, max={targets.max():.4f}")
+                    # Skip this batch
+                    continue
 
                 # Backward
                 self.optimizer.zero_grad()
