@@ -724,11 +724,13 @@ def test_trm_debug() -> None:
             assert outputs.logits is not None
             logits = outputs.logits[:, -1, :]
 
-            # Check if <think> would be generated
+            # Check if <think> would be generated (before masking)
             think_prob = torch.softmax(logits, dim=-1)[0, model.think_token_id].item()
 
-            # Get top 5 tokens
-            top5_probs, top5_ids = torch.topk(torch.softmax(logits, dim=-1), 5, dim=-1)
+            # Apply masking if TRM is active
+            if model._trm_activated:
+                logits[:, model.think_token_id] = float("-inf")
+                logits[:, model.end_think_token_id] = float("-inf")
 
             next_token = logits.argmax(dim=-1, keepdim=True)
             next_token_str = model.tokenizer.decode(next_token[0])
