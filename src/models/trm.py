@@ -26,11 +26,20 @@ class TransformerBlock(nn.Module):
             nn.Linear(d_model, d_model * 4), nn.GELU(), nn.Linear(d_model * 4, d_model)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """
+        Forward pass through transformer block.
+
+        Args:
+            x: Input tensor [B, L, D]
+            key_padding_mask: Padding mask [B, L] where True = ignore (padding)
+        """
         # Self-attention with residual
         residual = x
         x = self.norm1(x)
-        x, _ = self.self_attn(x, x, x)
+        x, _ = self.self_attn(x, x, x, key_padding_mask=key_padding_mask)
         x = x + residual
 
         # MLP with residual
@@ -56,9 +65,22 @@ class TinyRecursiveNetwork(nn.Module):
             [TransformerBlock(d_model, n_heads, dropout) for _ in range(n_layers)]
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Forward pass through the network.
+
+        Args:
+            x: Input tensor [B, L, D]
+            mask: Attention mask [B, L] where 1 = valid, 0 = padding
+                  (Will be converted to key_padding_mask internally)
+        """
+        # Convert mask to key_padding_mask format (True = ignore)
+        key_padding_mask = None
+        if mask is not None:
+            key_padding_mask = mask == 0  # Invert: 0 -> True (ignore)
+
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, key_padding_mask=key_padding_mask)
         return x
 
 
