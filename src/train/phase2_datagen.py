@@ -295,6 +295,15 @@ class ThinkingDataGenerator:
         )
 
         if think_start_pos is None or think_end_pos is None:
+            # Debug: track why we're failing
+            if not hasattr(self, "_fail_stats"):
+                self._fail_stats = {"no_start": 0, "no_end": 0, "both_missing": 0}
+            if think_start_pos is None and think_end_pos is None:
+                self._fail_stats["both_missing"] += 1
+            elif think_start_pos is None:
+                self._fail_stats["no_start"] += 1
+            else:
+                self._fail_stats["no_end"] += 1
             return None
 
         if think_end_pos <= think_start_pos:
@@ -574,6 +583,13 @@ class ThinkingDataGenerator:
         print(f"  Successful: {len(hidden_pres)}")
         print(f"  Failures: {failures}")
         print(f"  Success rate: {len(hidden_pres) / (len(hidden_pres) + failures) * 100:.1f}%")
+
+        # Print failure breakdown
+        if hasattr(self, "_fail_stats"):
+            print("\nFailure breakdown:")
+            print(f"  No <think> found in generated: {self._fail_stats.get('no_start', 0)}")
+            print(f"  No </think> found (thinking too long?): {self._fail_stats.get('no_end', 0)}")
+            print(f"  Both missing (no thinking at all): {self._fail_stats.get('both_missing', 0)}")
 
         if len(hidden_pres) == 0:
             raise ValueError("No successful samples generated!")
