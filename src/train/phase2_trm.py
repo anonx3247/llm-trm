@@ -74,7 +74,8 @@ class Phase2Config:
     n_heads: int = 8
     n_latent_steps: int = 6  # n in paper
     n_deep_recursions: int = 3  # T in paper
-    n_supervision_steps: int = 4  # N_sup in paper (reduced from 16 for stability)
+    n_supervision_steps: int = 8  # N_sup in paper (16 in paper, adjustable via CLI)
+    dropout: float = 0.1  # Dropout for stability
 
     # Training (from TRM paper hyperparameters)
     batch_size: int = 32  # Smaller due to variable length sequences
@@ -468,6 +469,7 @@ class TRMSequenceTrainer:
             n_heads=self.config.n_heads,
             n_latent_steps=self.config.n_latent_steps,
             n_deep_recursions=self.config.n_deep_recursions,
+            dropout=self.config.dropout,
         )
         self.trm.to(self.device)
 
@@ -750,9 +752,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--n_latent_steps", type=int, default=6)
-    parser.add_argument("--n_deep_recursions", type=int, default=3)
-    parser.add_argument("--n_supervision_steps", type=int, default=16)
+    parser.add_argument("--n_latent_steps", type=int, default=6, help="Latent recursion steps (n)")
+    parser.add_argument("--n_deep_recursions", type=int, default=3, help="Deep recursion steps (T)")
+    parser.add_argument(
+        "--n_supervision_steps", type=int, default=8, help="Supervision steps (N_sup)"
+    )
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout for stability")
 
     # EMA
     parser.add_argument("--use_ema", action="store_true", default=True)
@@ -779,6 +784,7 @@ if __name__ == "__main__":
         n_latent_steps=args.n_latent_steps,
         n_deep_recursions=args.n_deep_recursions,
         n_supervision_steps=args.n_supervision_steps,
+        dropout=args.dropout,
         use_ema=args.use_ema,
         ema_decay=args.ema_decay,
         use_wandb=args.use_wandb,
