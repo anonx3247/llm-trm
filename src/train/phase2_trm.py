@@ -723,6 +723,7 @@ class TRMSequenceTrainer:
                 "mse": 0.0,
                 "cosine_similarity": 0.0,
                 "relative_error": 0.0,
+                "halt_loss": 0.0,
             }
             num_batches = 0
 
@@ -772,17 +773,17 @@ class TRMSequenceTrainer:
                     pbar.set_postfix({"loss": f"{avg_loss:.6f}", "cos_sim": f"{avg_cos_sim:.4f}"})
 
                     if self.config.use_wandb and WANDB_AVAILABLE:
-                        wandb.log(
-                            {
-                                "train/loss": avg_loss,
-                                "train/mse": epoch_metrics["mse"] / num_batches,
-                                "train/cosine_similarity": avg_cos_sim,
-                                "train/relative_error": epoch_metrics["relative_error"]
-                                / num_batches,
-                                "train/lr": scheduler.get_last_lr()[0],
-                            },
-                            step=global_step,
-                        )
+                        log_dict = {
+                            "train/loss": avg_loss,
+                            "train/mse": epoch_metrics["mse"] / num_batches,
+                            "train/cosine_similarity": avg_cos_sim,
+                            "train/relative_error": epoch_metrics["relative_error"]
+                            / num_batches,
+                            "train/lr": scheduler.get_last_lr()[0],
+                        }
+                        if self.config.use_halting:
+                            log_dict["train/halt_loss"] = epoch_metrics["halt_loss"] / num_batches
+                        wandb.log(log_dict, step=global_step)
 
             # End of epoch
             avg_epoch_loss = epoch_loss / num_batches
