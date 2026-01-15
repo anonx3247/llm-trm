@@ -74,7 +74,17 @@ class Phase2Config:
     n_heads: int = 8
     n_latent_steps: int = 6  # n in paper
     n_deep_recursions: int = 3  # T in paper
-    n_supervision_steps: int = 16  # N_sup in paper
+    n_supervision_steps: int = 8  # N_sup in paper (16 in paper, adjustable via CLI)
+    dropout: float = 0.1  # Dropout for stability
+
+    # Halting (ACT - Adaptive Computation Time)
+    use_halting: bool = True  # Train halt head during Phase 2
+    halt_threshold: float = 0.7  # Initial cosine sim threshold (lower for adaptive)
+    halt_loss_weight: float = 0.5  # Weight for halting loss (0.5 in paper)
+    bce_halt_loss: bool = False  # Use BCE with threshold (True) or MSE on cos_sim (False)
+    adaptive_halt_threshold: bool = True  # Update threshold to last epoch's avg cos_sim
+    early_stop_training: bool = False  # Whether to early stop during training
+    per_step_updates: bool = True  # Gradient update per supervision step (paper style)
 
     # Training (from TRM paper hyperparameters)
     batch_size: int = 32  # Smaller due to variable length sequences
@@ -144,6 +154,26 @@ class HiddenStateSequenceDataset(Dataset):
         # Stack targets since they're all same size
         self.compressed_post_tensor = torch.stack(self.compressed_post)  # [N, D']
         print(f"Compressed {len(self.compressed_pre)} sequences")
+
+        # Validate data - check for NaN/Inf
+        for i, seq in enumerate(self.compressed_pre):
+            if torch.isnan(seq).any() or torch.isinf(seq).any():
+                print(f"Warning: NaN/Inf in compressed_pre[{i}]")
+        if torch.isnan(self.compressed_post_tensor).any():
+            print("Warning: NaN in compressed_post_tensor")
+
+        # Print data statistics
+        all_pre = torch.cat(self.compressed_pre, dim=0)
+        print(
+            f"  Pre stats: mean={all_pre.mean():.4f}, std={all_pre.std():.4f}, "
+            f"min={all_pre.min():.4f}, max={all_pre.max():.4f}"
+        )
+        print(
+            f"  Post stats: mean={self.compressed_post_tensor.mean():.4f}, "
+            f"std={self.compressed_post_tensor.std():.4f}, "
+            f"min={self.compressed_post_tensor.min():.4f}, "
+            f"max={self.compressed_post_tensor.max():.4f}"
+        )
 
     def __len__(self) -> int:
         return len(self.compressed_pre)
@@ -227,6 +257,9 @@ class SequenceTRM(RecursiveReasoningBase):
         # Halting mechanism (required by base class, trained via RL in Phase 3)
         self.halt_head = nn.Linear(d_compressed, 1)
 
+        # Output normalization for stability
+        self.output_norm = nn.RMSNorm(d_compressed)
+
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None, n_steps: int = 1
     ) -> torch.Tensor:
@@ -269,6 +302,127 @@ class SequenceTRM(RecursiveReasoningBase):
         # y contains the refined sequence [B, L+1, D']
         return y
 
+    def forward_with_halting(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        n_steps: int = 1,
+        early_stop: bool = False,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], int]:
+        """
+        Run TRM with halting probabilities at each step.
+
+        Args:
+            x: Context sequence [B, L, D']
+            mask: Attention mask [B, L]
+            n_steps: Max supervision steps
+            early_stop: Whether to stop early when halt_prob > 0.5
+
+        Returns:
+            output: [B, L+1, D']
+            halt_probs: List of [B, 1] halt probabilities at each step
+            steps_taken: Number of steps actually taken
+        """
+        B, L, D = x.shape
+
+        # Setup (same as forward)
+        reasoning = self.reasoning_token.expand(B, 1, D)
+        x_aug = torch.cat([x, reasoning], dim=1)
+
+        if mask is not None:
+            mask_aug = torch.cat([mask, torch.ones(B, 1, device=mask.device)], dim=1)
+        else:
+            mask_aug = None
+
+        y = torch.zeros_like(x_aug)
+        z = torch.zeros_like(x_aug)
+
+        halt_probs = []
+        steps_taken = 0
+
+        for _step in range(n_steps):
+            y, z = self._deep_recursion_with_mask(x_aug, y, z, mask_aug)
+            steps_taken += 1
+
+            # Compute halt probability from reasoning token
+            reasoning_state = y[:, -1, :]  # [B, D']
+            halt_logits = self.halt_head(reasoning_state)  # [B, 1]
+            halt_prob = torch.sigmoid(halt_logits)  # [B, 1]
+            halt_probs.append(halt_prob)
+
+            # Early stopping
+            if early_stop and halt_prob.mean() > 0.5:
+                break
+
+        return y, halt_probs, steps_taken
+
+    def single_step(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Run a single supervision step (one deep recursion).
+
+        Used for per-step gradient updates as in the paper.
+
+        Args:
+            x: Augmented input [B, L+1, D'] (context + reasoning token)
+            y: Current prediction [B, L+1, D']
+            z: Current latent [B, L+1, D']
+            mask: Attention mask [B, L+1]
+
+        Returns:
+            y: Updated prediction [B, L+1, D']
+            z: Updated latent [B, L+1, D']
+            halt_prob: Halt probability [B, 1]
+        """
+        # Run one deep recursion
+        y, z = self._deep_recursion_with_mask(x, y, z, mask)
+
+        # Compute halt probability from reasoning token
+        reasoning_state = y[:, -1, :]  # [B, D']
+        halt_logits = self.halt_head(reasoning_state)  # [B, 1]
+        halt_prob = torch.sigmoid(halt_logits)  # [B, 1]
+
+        return y, z, halt_prob
+
+    def setup_for_steps(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """
+        Setup initial state for per-step training.
+
+        Args:
+            x: Context sequence [B, L, D']
+            mask: Attention mask [B, L]
+
+        Returns:
+            x_aug: Augmented input [B, L+1, D']
+            y: Initial prediction (zeros) [B, L+1, D']
+            z: Initial latent (zeros) [B, L+1, D']
+            mask_aug: Augmented mask [B, L+1] or None
+        """
+        B, L, D = x.shape
+
+        # Add learnable reasoning token
+        reasoning = self.reasoning_token.expand(B, 1, D)
+        x_aug = torch.cat([x, reasoning], dim=1)
+
+        # Create augmented mask
+        if mask is not None:
+            mask_aug = torch.cat([mask, torch.ones(B, 1, device=mask.device)], dim=1)
+        else:
+            mask_aug = None
+
+        # Initialize y and z
+        y = torch.zeros_like(x_aug)
+        z = torch.zeros_like(x_aug)
+
+        return x_aug, y, z, mask_aug
+
     def _deep_recursion_with_mask(
         self,
         x: torch.Tensor,
@@ -306,13 +460,17 @@ class SequenceTRM(RecursiveReasoningBase):
         for i in range(n):
             z = net(x + y + z)  # latent reasoning
         y = net(y + z)  # refine answer (no x!)
+
+        Added normalization after each step for stability.
         """
-        # Latent steps
+        # Latent steps with normalization for stability
         for _ in range(self.n_latent_steps):
             z = self.net(x + y + z, mask=mask)
+            z = self.output_norm(z)  # Normalize to prevent explosion
 
         # Answer refinement (NOTE: no x here, as per paper)
         y = self.net(y + z, mask=mask)
+        y = self.output_norm(y)  # Normalize output
 
         return y, z
 
@@ -367,6 +525,8 @@ class TRMSequenceTrainer:
         self.config = config
         self.device = self._get_device()
         self.best_loss = float("inf")
+        # Adaptive halt threshold - starts at config value, updated each epoch
+        self.current_halt_threshold = config.halt_threshold
 
         # Create output directory
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
@@ -441,6 +601,7 @@ class TRMSequenceTrainer:
             n_heads=self.config.n_heads,
             n_latent_steps=self.config.n_latent_steps,
             n_deep_recursions=self.config.n_deep_recursions,
+            dropout=self.config.dropout,
         )
         self.trm.to(self.device)
 
@@ -535,26 +696,131 @@ class TRMSequenceTrainer:
         mask: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """
-        Single training step.
+        Single training step with optional halting loss.
 
         Args:
             contexts: Padded compressed contexts [B, L, D']
             targets: Compressed targets [B, D']
             mask: Attention mask [B, L]
         """
-        # TRM forward: [B, L, D'] -> [B, L+1, D']
-        output = self.trm(contexts, mask=mask, n_steps=self.config.n_supervision_steps)
+        if self.config.use_halting:
+            # Run with halting to get per-step halt probabilities
+            output, halt_probs, steps_taken = self.trm.forward_with_halting(
+                contexts,
+                mask=mask,
+                n_steps=self.config.n_supervision_steps,
+                early_stop=self.config.early_stop_training,
+            )
 
-        # Extract reasoning token (last position)
-        reasoning_output = output[:, -1, :]  # [B, D']
+            # Extract reasoning token (last position)
+            reasoning_output = output[:, -1, :]  # [B, D']
 
-        # MSE loss on reasoning token vs target
-        loss = F.mse_loss(reasoning_output, targets)
+            # MSE loss on reasoning token vs target
+            mse_loss = F.mse_loss(reasoning_output, targets)
+
+            # Halting loss: train halt_head to predict output quality
+            halt_loss = torch.tensor(0.0, device=contexts.device)
+            cos_sim = F.cosine_similarity(reasoning_output, targets, dim=-1)  # [B]
+
+            if self.config.bce_halt_loss:
+                # BCE with hard threshold (use current adaptive threshold)
+                halt_target = (cos_sim > self.current_halt_threshold).float().unsqueeze(-1)
+                for halt_prob in halt_probs:
+                    halt_loss = halt_loss + F.binary_cross_entropy(
+                        halt_prob.clamp(1e-7, 1 - 1e-7), halt_target
+                    )
+            else:
+                # MSE on cosine similarity (smooth, stable for regression)
+                halt_target = cos_sim.unsqueeze(-1)  # [B, 1]
+                for halt_prob in halt_probs:
+                    halt_loss = halt_loss + F.mse_loss(halt_prob, halt_target)
+
+            # Average across steps (not sum) to keep scale consistent
+            halt_loss = halt_loss / len(halt_probs)
+
+            # Combine losses
+            loss = mse_loss + self.config.halt_loss_weight * halt_loss
+
+            # Compute metrics
+            metrics = self._compute_metrics(reasoning_output, targets)
+            metrics["halt_loss"] = halt_loss.item()
+            metrics["steps_taken"] = steps_taken
+            metrics["avg_halt_prob"] = torch.stack(halt_probs).mean().item()
+
+        else:
+            # Original behavior without halting
+            output = self.trm(contexts, mask=mask, n_steps=self.config.n_supervision_steps)
+            reasoning_output = output[:, -1, :]
+            loss = F.mse_loss(reasoning_output, targets)
+            metrics = self._compute_metrics(reasoning_output, targets)
+
+        return loss, metrics
+
+    def _train_single_step(
+        self,
+        x_aug: torch.Tensor,
+        y: torch.Tensor,
+        z: torch.Tensor,
+        mask_aug: torch.Tensor | None,
+        targets: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, float]]:
+        """
+        Single supervision step with gradient update (paper style).
+
+        Args:
+            x_aug: Augmented input [B, L+1, D']
+            y: Current prediction [B, L+1, D']
+            z: Current latent [B, L+1, D']
+            mask_aug: Augmented mask [B, L+1]
+            targets: Target embeddings [B, D']
+
+        Returns:
+            y: Updated prediction (detached for next step)
+            z: Updated latent (detached for next step)
+            loss: Loss tensor
+            metrics: Dictionary of metrics
+        """
+        # Run single deep recursion
+        y, z, halt_prob = self.trm.single_step(x_aug, y, z, mask_aug)
+
+        # Extract reasoning output
+        reasoning_output = y[:, -1, :]  # [B, D']
+
+        # MSE loss
+        mse_loss = F.mse_loss(reasoning_output, targets)
+
+        # Halting loss
+        if self.config.use_halting:
+            cos_sim = F.cosine_similarity(reasoning_output, targets, dim=-1)  # [B]
+
+            if self.config.bce_halt_loss:
+                halt_target = (cos_sim > self.current_halt_threshold).float().unsqueeze(-1)
+                halt_loss = F.binary_cross_entropy(halt_prob.clamp(1e-7, 1 - 1e-7), halt_target)
+            else:
+                halt_target = cos_sim.unsqueeze(-1)
+                halt_loss = F.mse_loss(halt_prob, halt_target)
+
+            loss = mse_loss + self.config.halt_loss_weight * halt_loss
+        else:
+            loss = mse_loss
+            halt_loss = torch.tensor(0.0)
+            halt_prob = torch.tensor(0.0)
 
         # Compute metrics
         metrics = self._compute_metrics(reasoning_output, targets)
+        metrics["halt_loss"] = (
+            halt_loss.item() if isinstance(halt_loss, torch.Tensor) else halt_loss
+        )
+        metrics["avg_halt_prob"] = (
+            halt_prob.mean().item() if isinstance(halt_prob, torch.Tensor) else halt_prob
+        )
+        metrics["steps_taken"] = 1.0
 
-        return loss, metrics
+        # Detach y, z for next step (prevents gradient accumulation across steps)
+        y_detached = y.detach()
+        z_detached = z.detach()
+
+        return y_detached, z_detached, loss, metrics
 
     def _save_checkpoint(self, epoch: int, loss: float, is_best: bool = False) -> None:
         """Save checkpoint."""
@@ -595,6 +861,13 @@ class TRMSequenceTrainer:
         print(f"  Batch size: {self.config.batch_size}")
         print(f"  Steps per epoch: {len(dataloader)}")
         print(f"  Total steps: {num_training_steps}")
+        print(f"  Per-step updates: {self.config.per_step_updates} (paper style)")
+        if self.config.use_halting:
+            halt_type = "BCE with threshold" if self.config.bce_halt_loss else "MSE on cos_sim"
+            print(f"  Halt loss: {halt_type}")
+            if self.config.bce_halt_loss:
+                adaptive = "adaptive" if self.config.adaptive_halt_threshold else "fixed"
+                print(f"  Halt threshold: {self.current_halt_threshold:.2f} ({adaptive})")
 
         for epoch in range(self.config.num_epochs):
             epoch_loss = 0.0
@@ -602,6 +875,9 @@ class TRMSequenceTrainer:
                 "mse": 0.0,
                 "cosine_similarity": 0.0,
                 "relative_error": 0.0,
+                "halt_loss": 0.0,
+                "steps_taken": 0.0,
+                "avg_halt_prob": 0.0,
             }
             num_batches = 0
 
@@ -612,48 +888,111 @@ class TRMSequenceTrainer:
                 targets = targets.to(self.device)
                 mask = mask.to(self.device)
 
-                # Forward and loss
-                loss, metrics = self._train_step(contexts, targets, mask)
+                if self.config.per_step_updates:
+                    # Per-step gradient updates (paper style)
+                    # Setup initial state
+                    x_aug, y, z, mask_aug = self.trm.setup_for_steps(contexts, mask)
 
-                # Backward
-                self.optimizer.zero_grad()
-                loss.backward()
+                    batch_loss = 0.0
+                    batch_metrics: dict[str, float] = {k: 0.0 for k in epoch_metrics.keys()}
+                    steps_this_batch = 0
 
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(self.trm.parameters(), self.config.max_grad_norm)
+                    for _sup_step in range(self.config.n_supervision_steps):
+                        # Single step forward
+                        y, z, loss, metrics = self._train_single_step(
+                            x_aug, y, z, mask_aug, targets
+                        )
 
-                self.optimizer.step()
-                scheduler.step()
+                        # NaN detection
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            print(f"\nWarning: NaN/Inf loss at step {global_step}")
+                            continue
 
-                # Update EMA
-                if self.ema is not None:
-                    self.ema.update()
+                        # Backward and update (per step!)
+                        self.optimizer.zero_grad()
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(
+                            self.trm.parameters(), self.config.max_grad_norm
+                        )
+                        self.optimizer.step()
+                        scheduler.step()
 
-                # Track metrics
-                epoch_loss += loss.item()
-                for k, v in metrics.items():
-                    epoch_metrics[k] += v
-                num_batches += 1
-                global_step += 1
+                        # Update EMA
+                        if self.ema is not None:
+                            self.ema.update()
+
+                        batch_loss += loss.item()
+                        for k, v in metrics.items():
+                            batch_metrics[k] += v
+                        steps_this_batch += 1
+                        global_step += 1
+
+                        # Early stopping based on halt probability
+                        if self.config.early_stop_training and self.config.use_halting:
+                            if metrics["avg_halt_prob"] > 0.5:
+                                break
+
+                    # Average metrics over supervision steps
+                    if steps_this_batch > 0:
+                        epoch_loss += batch_loss / steps_this_batch
+                        for k in epoch_metrics.keys():
+                            epoch_metrics[k] += batch_metrics[k] / steps_this_batch
+                    num_batches += 1
+
+                else:
+                    # Original: single backward after all steps
+                    loss, metrics = self._train_step(contexts, targets, mask)
+
+                    # NaN detection
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        print(f"\nWarning: NaN/Inf loss detected at step {global_step}")
+                        print(
+                            f"  Context stats: min={contexts.min():.4f}, max={contexts.max():.4f}"
+                        )
+                        print(f"  Target stats: min={targets.min():.4f}, max={targets.max():.4f}")
+                        continue
+
+                    # Backward
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.trm.parameters(), self.config.max_grad_norm)
+                    self.optimizer.step()
+                    scheduler.step()
+
+                    # Update EMA
+                    if self.ema is not None:
+                        self.ema.update()
+
+                    # Track metrics
+                    epoch_loss += loss.item()
+                    for k, v in metrics.items():
+                        epoch_metrics[k] += v
+                    num_batches += 1
+                    global_step += 1
 
                 # Logging
-                if global_step % self.config.log_steps == 0:
+                if global_step % self.config.log_steps == 0 and num_batches > 0:
                     avg_loss = epoch_loss / num_batches
                     avg_cos_sim = epoch_metrics["cosine_similarity"] / num_batches
                     pbar.set_postfix({"loss": f"{avg_loss:.6f}", "cos_sim": f"{avg_cos_sim:.4f}"})
 
                     if self.config.use_wandb and WANDB_AVAILABLE:
-                        wandb.log(
-                            {
-                                "train/loss": avg_loss,
-                                "train/mse": epoch_metrics["mse"] / num_batches,
-                                "train/cosine_similarity": avg_cos_sim,
-                                "train/relative_error": epoch_metrics["relative_error"]
-                                / num_batches,
-                                "train/lr": scheduler.get_last_lr()[0],
-                            },
-                            step=global_step,
-                        )
+                        log_dict = {
+                            "train/loss": avg_loss,
+                            "train/mse": epoch_metrics["mse"] / num_batches,
+                            "train/cosine_similarity": avg_cos_sim,
+                            "train/relative_error": epoch_metrics["relative_error"] / num_batches,
+                            "train/lr": scheduler.get_last_lr()[0],
+                        }
+                        if self.config.use_halting:
+                            log_dict["train/halt_loss"] = epoch_metrics["halt_loss"] / num_batches
+                            log_dict["train/steps_taken"] = (
+                                epoch_metrics["steps_taken"] / num_batches
+                            )
+                            log_dict["train/avg_halt_prob"] = (
+                                epoch_metrics["avg_halt_prob"] / num_batches
+                            )
+                        wandb.log(log_dict, step=global_step)
 
             # End of epoch
             avg_epoch_loss = epoch_loss / num_batches
@@ -665,6 +1004,17 @@ class TRMSequenceTrainer:
                 f"Cosine Sim: {avg_epoch_metrics['cosine_similarity']:.4f}"
             )
 
+            # Update adaptive halt threshold
+            if self.config.adaptive_halt_threshold and self.config.bce_halt_loss:
+                old_threshold = self.current_halt_threshold
+                # Set threshold to last epoch's avg cos_sim (with small margin)
+                self.current_halt_threshold = avg_epoch_metrics["cosine_similarity"] * 0.95
+                if abs(old_threshold - self.current_halt_threshold) > 0.01:
+                    print(
+                        f"  Adaptive halt threshold: {old_threshold:.4f} -> "
+                        f"{self.current_halt_threshold:.4f}"
+                    )
+
             # Save best checkpoint
             if avg_epoch_loss < self.best_loss:
                 self.best_loss = avg_epoch_loss
@@ -672,14 +1022,14 @@ class TRMSequenceTrainer:
 
             # Log epoch metrics
             if self.config.use_wandb and WANDB_AVAILABLE:
-                wandb.log(
-                    {
-                        "epoch/loss": avg_epoch_loss,
-                        "epoch/cosine_similarity": avg_epoch_metrics["cosine_similarity"],
-                        "epoch/best_loss": self.best_loss,
-                    },
-                    step=global_step,
-                )
+                epoch_log = {
+                    "epoch/loss": avg_epoch_loss,
+                    "epoch/cosine_similarity": avg_epoch_metrics["cosine_similarity"],
+                    "epoch/best_loss": self.best_loss,
+                }
+                if self.config.adaptive_halt_threshold and self.config.bce_halt_loss:
+                    epoch_log["epoch/halt_threshold"] = self.current_halt_threshold
+                wandb.log(epoch_log, step=global_step)
 
         print("\nTraining complete!")
         print(f"Best loss: {self.best_loss:.6f}")
@@ -715,9 +1065,58 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--n_latent_steps", type=int, default=6)
-    parser.add_argument("--n_deep_recursions", type=int, default=3)
-    parser.add_argument("--n_supervision_steps", type=int, default=16)
+    parser.add_argument("--n_latent_steps", type=int, default=6, help="Latent recursion steps (n)")
+    parser.add_argument("--n_deep_recursions", type=int, default=3, help="Deep recursion steps (T)")
+    parser.add_argument(
+        "--n_supervision_steps", type=int, default=8, help="Supervision steps (N_sup)"
+    )
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout for stability")
+
+    # Halting (ACT)
+    parser.add_argument("--use_halting", action="store_true", default=True, help="Train halt head")
+    parser.add_argument("--no_halting", action="store_false", dest="use_halting")
+    parser.add_argument(
+        "--halt_threshold", type=float, default=0.7, help="Initial cosine sim threshold for halt"
+    )
+    parser.add_argument(
+        "--adaptive_halt_threshold",
+        action="store_true",
+        default=True,
+        help="Update threshold to last epoch's avg cos_sim (curriculum style)",
+    )
+    parser.add_argument(
+        "--no_adaptive_halt_threshold",
+        action="store_false",
+        dest="adaptive_halt_threshold",
+        help="Use fixed halt threshold",
+    )
+    parser.add_argument(
+        "--halt_loss_weight", type=float, default=0.5, help="Weight for halting loss"
+    )
+    parser.add_argument(
+        "--early_stop_training",
+        action="store_true",
+        default=False,
+        help="Early stop during training when halt_prob > 0.5",
+    )
+    parser.add_argument(
+        "--bce_halt_loss",
+        action="store_true",
+        default=False,
+        help="Use BCE with threshold for halt loss (default: MSE on cos_sim)",
+    )
+    parser.add_argument(
+        "--per_step_updates",
+        action="store_true",
+        default=True,
+        help="Gradient update per supervision step (paper style)",
+    )
+    parser.add_argument(
+        "--no_per_step_updates",
+        action="store_false",
+        dest="per_step_updates",
+        help="Single gradient update after all steps",
+    )
 
     # EMA
     parser.add_argument("--use_ema", action="store_true", default=True)
@@ -744,6 +1143,14 @@ if __name__ == "__main__":
         n_latent_steps=args.n_latent_steps,
         n_deep_recursions=args.n_deep_recursions,
         n_supervision_steps=args.n_supervision_steps,
+        dropout=args.dropout,
+        use_halting=args.use_halting,
+        halt_threshold=args.halt_threshold,
+        adaptive_halt_threshold=args.adaptive_halt_threshold,
+        halt_loss_weight=args.halt_loss_weight,
+        bce_halt_loss=args.bce_halt_loss,
+        early_stop_training=args.early_stop_training,
+        per_step_updates=args.per_step_updates,
         use_ema=args.use_ema,
         ema_decay=args.ema_decay,
         use_wandb=args.use_wandb,
