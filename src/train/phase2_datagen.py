@@ -192,6 +192,12 @@ class ThinkingDataGenerator:
         # Track input lengths (accounting for left padding)
         input_lengths = attention_mask.sum(dim=1).tolist()
 
+        # Build EOS token list - stop on regular EOS or </think>
+        eos_tokens = [self.tokenizer.eos_token_id]
+        if self.think_end_ids:
+            # Add </think> token(s) as stop condition
+            eos_tokens.extend(self.think_end_ids)
+
         # Generate WITH hidden states output
         outputs = self.model.generate(
             input_ids=input_ids,
@@ -200,7 +206,7 @@ class ThinkingDataGenerator:
             temperature=self.config.temperature,
             do_sample=self.config.do_sample,
             pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=eos_tokens,
             return_dict_in_generate=True,
             output_hidden_states=True,
         )
