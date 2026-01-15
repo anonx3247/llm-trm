@@ -26,7 +26,7 @@ from src.train.phase2_datagen import (
     generate_hidden_state_pairs,
 )
 from src.train.phase2_trm import (
-    TRMIterationTrainer,
+    TRMSequenceTrainer,
     run_phase2_training,
 )
 from src.train.phase3_grpo import (
@@ -42,7 +42,7 @@ __all__ = [
     "ThinkingDataGenerator",
     "generate_hidden_state_pairs",
     # Phase 2 training
-    "TRMIterationTrainer",
+    "TRMSequenceTrainer",
     "run_phase2_training",
     # Phase 3
     "GRPOTrainer",

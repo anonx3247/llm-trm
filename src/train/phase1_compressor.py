@@ -368,9 +368,9 @@ class CompressorPretrainer:
                     return " ".join(texts)
                 # Handle other formats
                 elif "text" in item:
-                    return item["text"]
+                    return str(item["text"])
                 elif "content" in item:
-                    return item["content"]
+                    return str(item["content"])
                 else:
                     # Fallback: join all string values
                     return " ".join(str(v) for v in item.values() if isinstance(v, str))
