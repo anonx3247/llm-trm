@@ -1,15 +1,15 @@
 """
-Phase 2 Data Generation: Extract Hidden State Pairs
+Phase 2 Data Generation: Extract Hidden State Sequences
 
 Generate training data for TRM iteration training by:
 1. Running SmolLM3 in thinking mode on reasoning problems
-2. Capturing hidden states at two points:
-   - hidden_pre: Hidden state right before <think> token
-   - hidden_post: Hidden state right after </think> token
-3. Saving dataset as tensors
+2. Capturing hidden states:
+   - hidden_pre: Full sequence [L, D] before <think> token (context)
+   - hidden_post: Single vector [D] after </think> token (target)
+3. Saving dataset for variable-length sequence training
 
-The resulting dataset is used in phase2_trm.py to train TRM
-to map hidden_pre -> hidden_post via iterative reasoning.
+The TRM learns to take [B, L, D'] and output [B, L+1, D'] where
+position L+1 matches what was at position L+M (after M thinking tokens).
 
 Usage:
     python -m src.train.phase2_datagen \\
@@ -58,7 +58,7 @@ class DataGenConfig:
 
 class ThinkingDataGenerator:
     """
-    Generate hidden state pairs from SmolLM3 thinking trajectories.
+    Generate hidden state sequences from SmolLM3 thinking trajectories.
 
     Process:
     1. Load SmolLM3 with enable_thinking=True
@@ -66,16 +66,21 @@ class ThinkingDataGenerator:
        a. Generate response with thinking
        b. Find <think> and </think> token positions
        c. Re-run forward pass and capture hidden states
-       d. Extract hidden_pre and hidden_post
+       d. Extract hidden_pre (full context) and hidden_post (target)
     3. Save dataset
 
     Output format:
         {
-            "hidden_pre": Tensor[N, D],     # Hidden states before thinking
-            "hidden_post": Tensor[N, D],    # Hidden states after thinking
-            "num_tokens": List[int],        # Number of thinking tokens
-            "problems": List[str],          # Original problems (for reference)
+            "hidden_pre": List[Tensor[L_i, D]],  # Variable-length context sequences
+            "hidden_post": Tensor[N, D],          # Target states after thinking
+            "seq_lengths": List[int],             # Length of each context sequence
+            "num_thinking_tokens": List[int],     # Number of thinking tokens skipped
+            "problems": List[str],                # Original problems (for reference)
         }
+
+    Training goal:
+        TRM takes [B, L, D'] -> outputs [B, L+1, D']
+        Loss: MSE between output[:, -1, :] and hidden_post
     """
 
     def __init__(self, config: DataGenConfig):
@@ -208,9 +213,9 @@ class ThinkingDataGenerator:
     @torch.no_grad()
     def _extract_hidden_states(
         self, input_ids: list[int], think_start_pos: int, think_end_pos: int
-    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, int, int]:
         """
-        Extract hidden states at thinking boundaries.
+        Extract hidden state sequences at thinking boundaries.
 
         Args:
             input_ids: Full sequence including generation
@@ -218,9 +223,10 @@ class ThinkingDataGenerator:
             think_end_pos: Position of first token of </think>
 
         Returns:
-            hidden_pre: Hidden state right before <think> [D]
-            hidden_post: Hidden state right after </think> [D]
-            num_thinking_tokens: Number of tokens in thinking section
+            hidden_pre: Full context sequence before <think> [L, D]
+            hidden_post: Target state after </think> [D]
+            seq_length: Length of context sequence (L)
+            num_thinking_tokens: Number of tokens in thinking section (M)
         """
         # Convert to tensor
         input_tensor = torch.tensor([input_ids], device=self.device)
@@ -232,28 +238,28 @@ class ThinkingDataGenerator:
             return_dict=True,
         )
 
-        # Get last layer hidden states [1, L, D]
+        # Get last layer hidden states [1, total_len, D]
         hidden_states = outputs.hidden_states[-1]
 
-        # Extract states at boundaries
-        # hidden_pre: state right before <think> (the context state)
-        # We want the hidden state at position think_start_pos - 1
-        # This represents the model's state after processing the prompt
-        pre_pos = max(0, think_start_pos - 1)
-        hidden_pre = hidden_states[0, pre_pos, :]  # [D]
+        # hidden_pre: Full sequence from position 0 to think_start_pos (exclusive)
+        # This is the context before thinking begins
+        # We include up to (but not including) the <think> token
+        context_end = think_start_pos  # Position where <think> starts
+        hidden_pre = hidden_states[0, :context_end, :]  # [L, D]
+        seq_length = context_end
 
-        # hidden_post: state right after </think>
-        # We want the hidden state at position think_end_pos + len(think_end_ids) - 1
-        # This represents the model's state after thinking
+        # hidden_post: Target state after </think>
+        # Position right after the </think> token ends
         post_pos = think_end_pos + len(self.think_end_ids) - 1
         if post_pos >= hidden_states.shape[1]:
             post_pos = hidden_states.shape[1] - 1
         hidden_post = hidden_states[0, post_pos, :]  # [D]
 
-        # Number of thinking tokens (between <think> and </think>)
-        num_thinking_tokens = think_end_pos - think_start_pos - len(self.think_start_ids)
+        # Number of thinking tokens (M) = tokens between <think> and </think> (inclusive)
+        # This is what the TRM will learn to "skip"
+        num_thinking_tokens = think_end_pos + len(self.think_end_ids) - think_start_pos
 
-        return hidden_pre, hidden_post, num_thinking_tokens
+        return hidden_pre, hidden_post, seq_length, num_thinking_tokens
 
     def _load_problems(self) -> list[str]:
         """Load reasoning problems from dataset."""
@@ -302,18 +308,19 @@ class ThinkingDataGenerator:
 
     def generate_pairs(self, problems: list[str]) -> dict[str, Any]:
         """
-        Generate hidden state pairs for a list of problems.
+        Generate hidden state sequence pairs for a list of problems.
 
         Args:
             problems: List of reasoning problems
 
         Returns:
-            Dictionary with hidden_pre, hidden_post, num_tokens, problems
+            Dictionary with hidden_pre (list), hidden_post, seq_lengths, etc.
         """
-        hidden_pres = []
-        hidden_posts = []
-        num_tokens_list = []
-        successful_problems = []
+        hidden_pres: list[torch.Tensor] = []  # List of [L_i, D] tensors
+        hidden_posts: list[torch.Tensor] = []  # List of [D] tensors
+        seq_lengths: list[int] = []
+        num_thinking_tokens_list: list[int] = []
+        successful_problems: list[str] = []
         failures = 0
 
         for i, problem in enumerate(tqdm(problems, desc="Generating pairs")):
@@ -342,15 +349,21 @@ class ThinkingDataGenerator:
                     failures += 1
                     continue
 
+                # Skip if context is too short (need at least 1 token)
+                if think_start_pos < 1:
+                    failures += 1
+                    continue
+
                 # Extract hidden states
-                hidden_pre, hidden_post, num_tokens = self._extract_hidden_states(
+                hidden_pre, hidden_post, seq_len, num_thinking = self._extract_hidden_states(
                     generated_ids, think_start_pos, think_end_pos
                 )
 
                 # Store results (move to CPU and convert to float32 for storage)
                 hidden_pres.append(hidden_pre.cpu().float())
                 hidden_posts.append(hidden_post.cpu().float())
-                num_tokens_list.append(num_tokens)
+                seq_lengths.append(seq_len)
+                num_thinking_tokens_list.append(num_thinking)
                 successful_problems.append(problem)
 
             except Exception as e:
@@ -374,11 +387,16 @@ class ThinkingDataGenerator:
         if len(hidden_pres) == 0:
             raise ValueError("No successful samples generated!")
 
+        # Stack hidden_posts since they're all [D]
+        hidden_post_tensor = torch.stack(hidden_posts)  # [N, D]
+
         return {
-            "hidden_pre": torch.stack(hidden_pres),  # [N, D]
-            "hidden_post": torch.stack(hidden_posts),  # [N, D]
-            "num_tokens": num_tokens_list,
+            "hidden_pre": hidden_pres,  # List of [L_i, D] tensors (variable length)
+            "hidden_post": hidden_post_tensor,  # [N, D]
+            "seq_lengths": seq_lengths,  # List of L_i values
+            "num_thinking_tokens": num_thinking_tokens_list,  # List of M_i values
             "problems": successful_problems,
+            "hidden_size": self.hidden_size,
         }
 
     def run(self) -> None:
@@ -397,9 +415,12 @@ class ThinkingDataGenerator:
         torch.save(data, output_path)
 
         print(f"\nDataset saved to: {output_path}")
-        print(f"  hidden_pre shape: {data['hidden_pre'].shape}")
+        print(f"  Number of samples: {len(data['hidden_pre'])}")
         print(f"  hidden_post shape: {data['hidden_post'].shape}")
-        print(f"  Avg thinking tokens: {sum(data['num_tokens']) / len(data['num_tokens']):.1f}")
+        print(f"  Avg context length: {sum(data['seq_lengths']) / len(data['seq_lengths']):.1f}")
+        print(
+            f"  Avg thinking tokens: {sum(data['num_thinking_tokens']) / len(data['num_thinking_tokens']):.1f}"
+        )
 
 
 def generate_hidden_state_pairs(config: DataGenConfig | None = None) -> None:
