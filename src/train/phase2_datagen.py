@@ -352,7 +352,7 @@ class ThinkingDataGenerator:
             ):
                 if i >= num_samples:
                     break
-                problems.append(str(item["Problem"]))
+                problems.append(str(item["Question"]))
 
         elif dataset_name == "humaneval":
             # OpenAI HumanEval coding problems
