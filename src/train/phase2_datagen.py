@@ -22,8 +22,9 @@ Usage:
         --batch_size 4
 """
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,7 @@ class DataGenConfig:
     # Checkpointing
     checkpoint_every: int = 100  # Save progress every N samples
     resume_from: str | None = None  # Path to checkpoint to resume from
+    no_auto_resume: bool = False  # Disable auto-resume from existing checkpoints
 
 
 class ThinkingDataGenerator:
@@ -480,6 +482,97 @@ class ThinkingDataGenerator:
         data: dict[str, Any] = torch.load(checkpoint_path, weights_only=False)
         return data
 
+    def _get_config_path(self) -> Path:
+        """Get path to config JSON file."""
+        return Path(self.config.output_dir) / "datagen_config.json"
+
+    def _save_config_json(self) -> None:
+        """Save config to JSON file for resume validation."""
+        config_path = self._get_config_path()
+        config_dict = asdict(self.config)
+        # Don't save resume_from as it's session-specific
+        config_dict.pop("resume_from", None)
+        config_path.write_text(json.dumps(config_dict, indent=2))
+        print(f"Config saved to: {config_path}")
+
+    def _load_config_json(self) -> dict[str, Any] | None:
+        """Load config from JSON file if it exists."""
+        config_path = self._get_config_path()
+        if config_path.exists():
+            data: dict[str, Any] = json.loads(config_path.read_text())
+            return data
+        return None
+
+    def _validate_config_for_resume(self, saved_config: dict[str, Any]) -> bool:
+        """
+        Validate that current config matches saved config for resuming.
+
+        Critical params that must match: model_name, dataset, num_samples, hidden dimensions.
+        Non-critical params (can differ): batch_size, checkpoint_every, temperature.
+        """
+        current = asdict(self.config)
+
+        # Critical params that must match
+        critical_params = [
+            "model_name",
+            "dataset",
+            "dataset_subset",
+            "num_samples",
+            "max_seq_length",
+            "output_filename",
+        ]
+
+        mismatches = []
+        for param in critical_params:
+            if current.get(param) != saved_config.get(param):
+                mismatches.append(
+                    f"  {param}: current={current.get(param)}, saved={saved_config.get(param)}"
+                )
+
+        if mismatches:
+            print("\nConfig mismatch detected! Cannot resume from checkpoint.")
+            print("Mismatched parameters:")
+            for m in mismatches:
+                print(m)
+            return False
+
+        # Warn about non-critical differences
+        warn_params = ["batch_size", "checkpoint_every", "temperature", "max_new_tokens"]
+        warnings = []
+        for param in warn_params:
+            if current.get(param) != saved_config.get(param):
+                warnings.append(
+                    f"  {param}: using current={current.get(param)} (saved was {saved_config.get(param)})"
+                )
+
+        if warnings:
+            print("\nNote: Some non-critical params differ from saved config:")
+            for w in warnings:
+                print(w)
+            print("Continuing with current values...\n")
+
+        return True
+
+    def _find_latest_checkpoint(self) -> Path | None:
+        """Find the latest checkpoint file in output_dir."""
+        output_dir = Path(self.config.output_dir)
+        if not output_dir.exists():
+            return None
+
+        checkpoints = list(output_dir.glob("checkpoint_*.pt"))
+        if not checkpoints:
+            return None
+
+        # Sort by checkpoint number (checkpoint_100.pt -> 100)
+        def get_checkpoint_num(p: Path) -> int:
+            try:
+                return int(p.stem.split("_")[1])
+            except (IndexError, ValueError):
+                return 0
+
+        checkpoints.sort(key=get_checkpoint_num, reverse=True)
+        return checkpoints[0]
+
     def generate_pairs(self, problems: list[str]) -> dict[str, Any]:
         """
         Generate hidden state sequence pairs using batched generation.
@@ -635,11 +728,34 @@ class ThinkingDataGenerator:
         }
 
     def run(self) -> None:
-        """Generate and save the dataset."""
+        """Generate and save the dataset with auto-resume support."""
+        # Create output directory
+        Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Check for existing checkpoint to auto-resume
+        if self.config.resume_from is None and not self.config.no_auto_resume:
+            latest_checkpoint = self._find_latest_checkpoint()
+            if latest_checkpoint:
+                # Found existing checkpoint - validate config
+                saved_config = self._load_config_json()
+                if saved_config:
+                    if self._validate_config_for_resume(saved_config):
+                        print(f"\nAuto-resuming from: {latest_checkpoint}")
+                        self.config.resume_from = str(latest_checkpoint)
+                    else:
+                        print("\nStarting fresh due to config mismatch.")
+                        print("To force resume, use --resume_from explicitly.\n")
+                else:
+                    print("\nFound checkpoint but no config JSON. Starting fresh.")
+                    print("To force resume, use --resume_from explicitly.\n")
+
+        # Save config JSON (for future resume validation)
+        self._save_config_json()
+
+        # Load problems and generate
         problems = self._load_problems()
         data = self.generate_pairs(problems)
 
-        Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
         output_path = os.path.join(self.config.output_dir, self.config.output_filename)
         torch.save(data, output_path)
 
@@ -652,10 +768,15 @@ class ThinkingDataGenerator:
             f"{sum(data['num_thinking_tokens']) / len(data['num_thinking_tokens']):.1f}"
         )
 
-        # Clean up checkpoints
+        # Clean up checkpoints and config on successful completion
         for f in Path(self.config.output_dir).glob("checkpoint_*.pt"):
             f.unlink()
             print(f"Cleaned up checkpoint: {f}")
+
+        config_path = self._get_config_path()
+        if config_path.exists():
+            config_path.unlink()
+            print(f"Cleaned up config: {config_path}")
 
 
 def generate_hidden_state_pairs(config: DataGenConfig | None = None) -> None:
@@ -708,6 +829,12 @@ if __name__ == "__main__":
         dest="skip_failures",
         help="Raise error when thinking tags not found",
     )
+    parser.add_argument(
+        "--no_auto_resume",
+        action="store_true",
+        default=False,
+        help="Disable auto-resume from existing checkpoints (start fresh)",
+    )
     args = parser.parse_args()
 
     config = DataGenConfig(
@@ -724,6 +851,7 @@ if __name__ == "__main__":
         checkpoint_every=args.checkpoint_every,
         resume_from=args.resume_from,
         skip_failures=args.skip_failures,
+        no_auto_resume=args.no_auto_resume,
     )
 
     generate_hidden_state_pairs(config)

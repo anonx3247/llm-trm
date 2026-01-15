@@ -77,6 +77,12 @@ class Phase2Config:
     n_supervision_steps: int = 8  # N_sup in paper (16 in paper, adjustable via CLI)
     dropout: float = 0.1  # Dropout for stability
 
+    # Halting (ACT - Adaptive Computation Time)
+    use_halting: bool = True  # Train halt head during Phase 2
+    halt_threshold: float = 0.95  # Cosine sim threshold for "correct" prediction
+    halt_loss_weight: float = 0.5  # Weight for halting loss (0.5 in paper)
+    early_stop_training: bool = False  # Whether to early stop during training
+
     # Training (from TRM paper hyperparameters)
     batch_size: int = 32  # Smaller due to variable length sequences
     learning_rate: float = 1e-4
@@ -292,6 +298,60 @@ class SequenceTRM(RecursiveReasoningBase):
         # Output: original context + refined reasoning token
         # y contains the refined sequence [B, L+1, D']
         return y
+
+    def forward_with_halting(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        n_steps: int = 1,
+        early_stop: bool = False,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], int]:
+        """
+        Run TRM with halting probabilities at each step.
+
+        Args:
+            x: Context sequence [B, L, D']
+            mask: Attention mask [B, L]
+            n_steps: Max supervision steps
+            early_stop: Whether to stop early when halt_prob > 0.5
+
+        Returns:
+            output: [B, L+1, D']
+            halt_probs: List of [B, 1] halt probabilities at each step
+            steps_taken: Number of steps actually taken
+        """
+        B, L, D = x.shape
+
+        # Setup (same as forward)
+        reasoning = self.reasoning_token.expand(B, 1, D)
+        x_aug = torch.cat([x, reasoning], dim=1)
+
+        if mask is not None:
+            mask_aug = torch.cat([mask, torch.ones(B, 1, device=mask.device)], dim=1)
+        else:
+            mask_aug = None
+
+        y = torch.zeros_like(x_aug)
+        z = torch.zeros_like(x_aug)
+
+        halt_probs = []
+        steps_taken = 0
+
+        for _step in range(n_steps):
+            y, z = self._deep_recursion_with_mask(x_aug, y, z, mask_aug)
+            steps_taken += 1
+
+            # Compute halt probability from reasoning token
+            reasoning_state = y[:, -1, :]  # [B, D']
+            halt_logits = self.halt_head(reasoning_state)  # [B, 1]
+            halt_prob = torch.sigmoid(halt_logits)  # [B, 1]
+            halt_probs.append(halt_prob)
+
+            # Early stopping
+            if early_stop and halt_prob.mean() > 0.5:
+                break
+
+        return y, halt_probs, steps_taken
 
     def _deep_recursion_with_mask(
         self,
@@ -564,24 +624,56 @@ class TRMSequenceTrainer:
         mask: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """
-        Single training step.
+        Single training step with optional halting loss.
 
         Args:
             contexts: Padded compressed contexts [B, L, D']
             targets: Compressed targets [B, D']
             mask: Attention mask [B, L]
         """
-        # TRM forward: [B, L, D'] -> [B, L+1, D']
-        output = self.trm(contexts, mask=mask, n_steps=self.config.n_supervision_steps)
+        if self.config.use_halting:
+            # Run with halting to get per-step halt probabilities
+            output, halt_probs, steps_taken = self.trm.forward_with_halting(
+                contexts,
+                mask=mask,
+                n_steps=self.config.n_supervision_steps,
+                early_stop=self.config.early_stop_training,
+            )
 
-        # Extract reasoning token (last position)
-        reasoning_output = output[:, -1, :]  # [B, D']
+            # Extract reasoning token (last position)
+            reasoning_output = output[:, -1, :]  # [B, D']
 
-        # MSE loss on reasoning token vs target
-        loss = F.mse_loss(reasoning_output, targets)
+            # MSE loss on reasoning token vs target
+            mse_loss = F.mse_loss(reasoning_output, targets)
 
-        # Compute metrics
-        metrics = self._compute_metrics(reasoning_output, targets)
+            # Halting loss: train halt_head to predict when output is "correct"
+            # "Correct" = cosine_similarity > threshold
+            halt_loss = torch.tensor(0.0, device=contexts.device)
+            for halt_prob in halt_probs:
+                # Compute similarity at this step
+                cos_sim = F.cosine_similarity(reasoning_output, targets, dim=-1)  # [B]
+                # Target: halt if similarity exceeds threshold
+                halt_target = (cos_sim > self.config.halt_threshold).float().unsqueeze(-1)  # [B, 1]
+                # BCE loss for halting
+                halt_loss = halt_loss + F.binary_cross_entropy(
+                    halt_prob.clamp(1e-7, 1 - 1e-7), halt_target
+                )
+
+            # Combine losses
+            loss = mse_loss + self.config.halt_loss_weight * halt_loss
+
+            # Compute metrics
+            metrics = self._compute_metrics(reasoning_output, targets)
+            metrics["halt_loss"] = halt_loss.item()
+            metrics["steps_taken"] = steps_taken
+            metrics["avg_halt_prob"] = torch.stack(halt_probs).mean().item()
+
+        else:
+            # Original behavior without halting
+            output = self.trm(contexts, mask=mask, n_steps=self.config.n_supervision_steps)
+            reasoning_output = output[:, -1, :]
+            loss = F.mse_loss(reasoning_output, targets)
+            metrics = self._compute_metrics(reasoning_output, targets)
 
         return loss, metrics
 
@@ -759,6 +851,22 @@ if __name__ == "__main__":
     )
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout for stability")
 
+    # Halting (ACT)
+    parser.add_argument("--use_halting", action="store_true", default=True, help="Train halt head")
+    parser.add_argument("--no_halting", action="store_false", dest="use_halting")
+    parser.add_argument(
+        "--halt_threshold", type=float, default=0.95, help="Cosine sim threshold for halt target"
+    )
+    parser.add_argument(
+        "--halt_loss_weight", type=float, default=0.5, help="Weight for halting loss"
+    )
+    parser.add_argument(
+        "--early_stop_training",
+        action="store_true",
+        default=False,
+        help="Early stop during training when halt_prob > 0.5",
+    )
+
     # EMA
     parser.add_argument("--use_ema", action="store_true", default=True)
     parser.add_argument("--no_ema", action="store_false", dest="use_ema")
@@ -785,6 +893,10 @@ if __name__ == "__main__":
         n_deep_recursions=args.n_deep_recursions,
         n_supervision_steps=args.n_supervision_steps,
         dropout=args.dropout,
+        use_halting=args.use_halting,
+        halt_threshold=args.halt_threshold,
+        halt_loss_weight=args.halt_loss_weight,
+        early_stop_training=args.early_stop_training,
         use_ema=args.use_ema,
         ema_decay=args.ema_decay,
         use_wandb=args.use_wandb,
