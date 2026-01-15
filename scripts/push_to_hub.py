@@ -182,7 +182,7 @@ trm = SequenceTRM(
     n_layers={n_layers},
     n_heads={n_heads},
 )
-trm.load_state_dict(checkpoint["model"])
+trm.load_state_dict(checkpoint["trm_state_dict"])
 
 # Use: takes [B, L, D'] context, outputs [B, L+1, D']
 compressed_hidden = ...  # [B, L, {d_compressed}]
@@ -223,12 +223,15 @@ def push_to_hub(
     # weights_only=False needed because checkpoint contains config dataclasses
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    # Validate checkpoint - support both Phase 1 (compressor) and Phase 2 (model)
-    if "compressor" not in checkpoint and "model" not in checkpoint:
-        raise ValueError("Checkpoint does not contain 'compressor' or 'model' state dict")
+    # Validate checkpoint - support both Phase 1 (compressor) and Phase 2 (trm_state_dict)
+    if "compressor" not in checkpoint and "trm_state_dict" not in checkpoint:
+        raise ValueError(
+            f"Checkpoint does not contain 'compressor' or 'trm_state_dict'. "
+            f"Keys found: {list(checkpoint.keys())}"
+        )
 
     # Determine checkpoint type
-    is_phase2 = "model" in checkpoint and "compressor" not in checkpoint
+    is_phase2 = "trm_state_dict" in checkpoint
 
     # Create repo
     api = HfApi()
