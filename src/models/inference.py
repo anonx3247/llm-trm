@@ -220,6 +220,7 @@ class SmolLMWithTRMInference(nn.Module):
 
         # Track if we've done TRM intervention
         self._trm_activated = False
+        self._trm_reasoning_hidden: torch.Tensor | None = None
 
         print("\nSmolLMWithTRMInference initialized:")
         print(f"  - Model: {model_name}")
@@ -276,7 +277,7 @@ class SmolLMWithTRMInference(nn.Module):
         1. Gets hidden states for context (excluding <think>)
         2. Compresses → TRM → Decompresses
         3. Returns logits from TRM output
-        4. Sets up KV cache with TRM-enhanced context
+        4. Stores TRM reasoning hidden state for future injection
         """
         # Get hidden states for everything BEFORE <think>
         context_ids = input_ids[:, :-1]  # Exclude <think>
@@ -309,19 +310,23 @@ class SmolLMWithTRMInference(nn.Module):
         # The last position (reasoning token) represents post-thinking state
         reasoning_hidden = decompressed[:, -1:, :]  # [B, 1, 2048]
 
-        # Convert to model dtype and get logits
+        # Convert to model dtype
         reasoning_hidden = reasoning_hidden.to(outputs.hidden_states[-1].dtype)
+
+        # Store the TRM reasoning hidden state for future use
+        # This allows us to inject it into subsequent forward passes
+        self._trm_reasoning_hidden = reasoning_hidden
+
+        # Get logits from TRM reasoning
         logits = self.model.lm_head(reasoning_hidden)  # [B, 1, vocab_size]
 
         # Mark TRM as activated so we don't trigger again
         self._trm_activated = True
 
-        # Return with the original KV cache from context
-        # Future tokens will attend to the context, not the TRM output directly
-        # (The TRM output is reflected in the logits we return)
+        # Don't use past_key_values - we'll handle context differently
         return CausalLMOutputWithPast(
             logits=logits,
-            past_key_values=outputs.past_key_values,
+            past_key_values=None,  # Don't use KV cache after TRM
             hidden_states=outputs.hidden_states if kwargs.get("output_hidden_states") else None,
         )
 
@@ -427,8 +432,10 @@ class SmolLMWithTRMInference(nn.Module):
                     if attention_mask is not None:
                         attention_mask = attention_mask[:, :-1]
 
-                    # Update past_key_values from TRM output
-                    past_key_values = outputs.past_key_values
+                    # IMPORTANT: Don't use KV cache after TRM activation
+                    # The TRM output isn't in the KV cache, so we need to
+                    # recompute from scratch each step to maintain consistency
+                    past_key_values = None
 
                     # Get next token from TRM output (this is the answer token)
                     assert outputs.logits is not None
@@ -470,6 +477,7 @@ class SmolLMWithTRMInference(nn.Module):
     def reset(self) -> None:
         """Reset TRM activation state for new generation."""
         self._trm_activated = False
+        self._trm_reasoning_hidden = None
 
 
 class CompressorOnlyInference(nn.Module):
