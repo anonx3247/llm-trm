@@ -458,6 +458,14 @@ class ThinkingDataGenerator:
         print(f"  Samples: {n_samples}")
         print(f"  Avg context length: {avg_ctx:.1f}")
         print(f"  Avg thinking tokens: {avg_think:.1f} (min: {min_think}, max: {max_think})")
+
+        # Show failure breakdown if available
+        if hasattr(self, "_fail_stats"):
+            total_fails = sum(self._fail_stats.values())
+            print(f"  Failures so far: {total_fails}")
+            print(f"    - No <think>: {self._fail_stats.get('no_start', 0)}")
+            print(f"    - No </think>: {self._fail_stats.get('no_end', 0)}")
+            print(f"    - Both missing: {self._fail_stats.get('both_missing', 0)}")
         print(f"{'=' * 60}")
 
     def _load_checkpoint(self, checkpoint_path: str) -> dict[str, Any]:
