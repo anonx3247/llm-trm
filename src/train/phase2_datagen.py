@@ -552,13 +552,20 @@ class ThinkingDataGenerator:
 
                 pbar.update(len(batch_problems))
 
-                # After first batch, show failure breakdown for early diagnosis
-                if batch_idx == 0 and hasattr(self, "_fail_stats"):
-                    total_fails = sum(self._fail_stats.values())
-                    print(f"\n[First batch] Success: {len(hidden_pres)}, Failures: {total_fails}")
-                    print(f"  - No <think>: {self._fail_stats.get('no_start', 0)}")
-                    print(f"  - No </think>: {self._fail_stats.get('no_end', 0)}")
-                    print(f"  - Both missing: {self._fail_stats.get('both_missing', 0)}")
+                # After first batch, show stats for early diagnosis
+                if batch_idx == 0:
+                    if hasattr(self, "_fail_stats"):
+                        total_fails = sum(self._fail_stats.values())
+                        print(
+                            f"\n[First batch] Success: {len(hidden_pres)}, Failures: {total_fails}"
+                        )
+                        print(f"  - No <think>: {self._fail_stats.get('no_start', 0)}")
+                        print(f"  - No </think>: {self._fail_stats.get('no_end', 0)}")
+                        print(f"  - Both missing: {self._fail_stats.get('both_missing', 0)}")
+                    else:
+                        print(
+                            f"\n[First batch] Success: {len(hidden_pres)}, Failures: 0 - All good!"
+                        )
 
             except torch.cuda.OutOfMemoryError:
                 print(f"\nOOM at batch {batch_idx}, reducing batch size...")
