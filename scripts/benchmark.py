@@ -15,9 +15,14 @@ Usage:
     python scripts/benchmark.py --model trm --num_samples 100
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import argparse
 import json
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
