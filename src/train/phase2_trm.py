@@ -808,8 +808,12 @@ class TRMSequenceTrainer:
 
         # Compute metrics
         metrics = self._compute_metrics(reasoning_output, targets)
-        metrics["halt_loss"] = halt_loss.item() if isinstance(halt_loss, torch.Tensor) else halt_loss
-        metrics["avg_halt_prob"] = halt_prob.mean().item() if isinstance(halt_prob, torch.Tensor) else halt_prob
+        metrics["halt_loss"] = (
+            halt_loss.item() if isinstance(halt_loss, torch.Tensor) else halt_loss
+        )
+        metrics["avg_halt_prob"] = (
+            halt_prob.mean().item() if isinstance(halt_prob, torch.Tensor) else halt_prob
+        )
         metrics["steps_taken"] = 1.0
 
         # Detach y, z for next step (prevents gradient accumulation across steps)
@@ -890,9 +894,7 @@ class TRMSequenceTrainer:
                     x_aug, y, z, mask_aug = self.trm.setup_for_steps(contexts, mask)
 
                     batch_loss = 0.0
-                    batch_metrics: dict[str, float] = {
-                        k: 0.0 for k in epoch_metrics.keys()
-                    }
+                    batch_metrics: dict[str, float] = {k: 0.0 for k in epoch_metrics.keys()}
                     steps_this_batch = 0
 
                     for _sup_step in range(self.config.n_supervision_steps):
@@ -944,7 +946,9 @@ class TRMSequenceTrainer:
                     # NaN detection
                     if torch.isnan(loss) or torch.isinf(loss):
                         print(f"\nWarning: NaN/Inf loss detected at step {global_step}")
-                        print(f"  Context stats: min={contexts.min():.4f}, max={contexts.max():.4f}")
+                        print(
+                            f"  Context stats: min={contexts.min():.4f}, max={contexts.max():.4f}"
+                        )
                         print(f"  Target stats: min={targets.min():.4f}, max={targets.max():.4f}")
                         continue
 
@@ -977,14 +981,17 @@ class TRMSequenceTrainer:
                             "train/loss": avg_loss,
                             "train/mse": epoch_metrics["mse"] / num_batches,
                             "train/cosine_similarity": avg_cos_sim,
-                            "train/relative_error": epoch_metrics["relative_error"]
-                            / num_batches,
+                            "train/relative_error": epoch_metrics["relative_error"] / num_batches,
                             "train/lr": scheduler.get_last_lr()[0],
                         }
                         if self.config.use_halting:
                             log_dict["train/halt_loss"] = epoch_metrics["halt_loss"] / num_batches
-                            log_dict["train/steps_taken"] = epoch_metrics["steps_taken"] / num_batches
-                            log_dict["train/avg_halt_prob"] = epoch_metrics["avg_halt_prob"] / num_batches
+                            log_dict["train/steps_taken"] = (
+                                epoch_metrics["steps_taken"] / num_batches
+                            )
+                            log_dict["train/avg_halt_prob"] = (
+                                epoch_metrics["avg_halt_prob"] / num_batches
+                            )
                         wandb.log(log_dict, step=global_step)
 
             # End of epoch
