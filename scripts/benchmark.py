@@ -196,7 +196,6 @@ def evaluate_compressor_model(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             do_sample=temperature > 0,
-            enable_thinking=True,
         )
         gen_time = time.time() - start_time
 

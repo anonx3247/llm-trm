@@ -348,8 +348,14 @@ class CompressorOnlyInference(nn.Module):
     """
     SmolLM3 with compressor roundtrip only (no TRM).
 
-    This is for evaluating whether the compressor alone degrades capabilities.
-    Hidden states are compressed and decompressed before being passed to lm_head.
+    Uses /no_think mode and applies compress→decompress once on prompt hidden states.
+    This tests whether the compressor alone degrades capabilities.
+
+    Flow:
+    1. Format prompt with /no_think mode
+    2. Get hidden states for the prompt
+    3. Compress → Decompress (roundtrip)
+    4. Generate from roundtripped hidden state
     """
 
     def __init__(
@@ -406,44 +412,39 @@ class CompressorOnlyInference(nn.Module):
         print("\nCompressorOnlyInference initialized:")
         print(f"  - Model: {model_name}")
         print(f"  - Compression ratio: {self.hidden_size / self.d_compressed:.1f}x")
+        print(f"  - Mode: /no_think + compressor roundtrip")
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        **kwargs: Any,
-    ) -> CausalLMOutputWithPast:
+    def _get_compressed_hidden(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
-        Forward pass with compressor roundtrip.
+        Get compressor-roundtripped hidden state for the prompt.
 
-        Hidden states are compressed → decompressed before lm_head.
+        Args:
+            input_ids: Tokenized prompt [B, L]
+            attention_mask: Optional attention mask [B, L]
+
+        Returns:
+            Roundtripped hidden state for the last position [B, 1, hidden_size]
         """
-        # Get hidden states
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            return_dict=True,
-            **kwargs,
-        )
+        # Get hidden states from the model
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+            )
 
-        # Get last layer hidden states
-        assert outputs.hidden_states is not None, "Model must return hidden states"
+        # Get last layer hidden states [B, L, hidden_size]
         hidden_states = outputs.hidden_states[-1]
 
         # Compress → Decompress roundtrip
         compressed = self.compressor(hidden_states.to(self.compressor.compress.weight.dtype))
         decompressed = self.compressor.decompress(compressed)
 
-        # Get logits from roundtripped hidden states
-        decompressed = decompressed.to(hidden_states.dtype)
-        logits = self.model.lm_head(decompressed)
-
-        return CausalLMOutputWithPast(
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-        )
+        # Return last position
+        return decompressed[:, -1:, :].to(hidden_states.dtype)
 
     def generate(
         self,
@@ -451,35 +452,50 @@ class CompressorOnlyInference(nn.Module):
         max_new_tokens: int = 256,
         temperature: float = 0.7,
         do_sample: bool = True,
-        enable_thinking: bool = True,
     ) -> dict[str, Any]:
-        """Generate with compressor roundtrip on every forward pass."""
-        # Format prompt
-        if enable_thinking:
-            messages = [{"role": "user", "content": prompt}]
-            formatted_prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            )
-        else:
-            formatted_prompt = prompt
+        """
+        Generate text with compressor-roundtripped prompt.
+
+        Uses /no_think mode - applies compressor once on prompt, then normal generation.
+
+        Args:
+            prompt: Input prompt
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to sample or greedy decode
+
+        Returns:
+            Dict with 'text', 'tokens_generated'
+        """
+        # Format prompt with /no_think mode
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,  # /no_think mode
+        )
 
         # Tokenize
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
 
-        # Generate token by token (no KV cache since we modify hidden states)
+        # Get compressor-roundtripped hidden state for the prompt
+        with torch.no_grad():
+            roundtripped_hidden = self._get_compressed_hidden(input_ids, attention_mask)
+
+        # Get first token logits from roundtripped hidden state
+        logits = self.model.lm_head(roundtripped_hidden)[:, -1, :]
+
+        # Generate tokens
         generated_ids = input_ids.clone()
         tokens_generated = 0
 
         with torch.no_grad():
-            for _ in range(max_new_tokens):
-                outputs = self.forward(input_ids=generated_ids)
-                assert outputs.logits is not None, "Model must return logits"
-                logits = outputs.logits[:, -1, :]
-
+            for step in range(max_new_tokens):
                 # Sample next token
                 if do_sample and temperature > 0:
                     probs = torch.softmax(logits / temperature, dim=-1)
@@ -487,12 +503,23 @@ class CompressorOnlyInference(nn.Module):
                 else:
                     next_token = logits.argmax(dim=-1, keepdim=True)
 
+                # Append to generated
                 generated_ids = torch.cat([generated_ids, next_token], dim=1)
                 tokens_generated += 1
 
+                # Check for EOS
                 if next_token.item() == self.tokenizer.eos_token_id:
                     break
 
+                # Get next logits (normal forward, no compressor after first token)
+                outputs = self.model(
+                    input_ids=generated_ids,
+                    attention_mask=None,
+                    return_dict=True,
+                )
+                logits = outputs.logits[:, -1, :]
+
+        # Decode
         generated_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=False)
 
         return {
