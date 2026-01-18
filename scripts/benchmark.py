@@ -71,7 +71,9 @@ def evaluate_base_model(
     model.eval()
 
     results = []
-    for sample in tqdm(samples, desc=f"Base (thinking={thinking})"):
+    correct_count = 0
+    pbar = tqdm(samples, desc=f"Base (think={thinking}) acc=0.0%")
+    for sample in pbar:
         question = sample["question"]
         gold = sample["gold"]
 
@@ -110,6 +112,10 @@ def evaluate_base_model(
         # Extract answer and check correctness
         predicted = extract_answer(response)
         correct = is_correct(predicted, gold)
+        if correct:
+            correct_count += 1
+        acc = correct_count / (len(results) + 1) * 100
+        pbar.set_description(f"Base (think={thinking}) acc={acc:.1f}%")
 
         results.append(
             {
@@ -140,7 +146,9 @@ def evaluate_compressor_model(
     model = CompressorOnlyInference()
 
     results = []
-    for sample in tqdm(samples, desc="Compressor"):
+    correct_count = 0
+    pbar = tqdm(samples, desc="Compressor acc=0.0%")
+    for sample in pbar:
         question = sample["question"]
         gold = sample["gold"]
         prompt = format_gsm8k_prompt(question)
@@ -165,6 +173,10 @@ def evaluate_compressor_model(
         # Extract answer and check correctness
         predicted = extract_answer(response)
         correct = is_correct(predicted, gold)
+        if correct:
+            correct_count += 1
+        acc = correct_count / (len(results) + 1) * 100
+        pbar.set_description(f"Compressor acc={acc:.1f}%")
 
         results.append(
             {
@@ -195,9 +207,10 @@ def evaluate_trm_model(
     model = SmolLMWithTRMInference()
 
     results = []
+    correct_count = 0
     trm_activations = 0
-
-    for sample in tqdm(samples, desc="TRM"):
+    pbar = tqdm(samples, desc="TRM acc=0.0%")
+    for sample in pbar:
         question = sample["question"]
         gold = sample["gold"]
         prompt = format_gsm8k_prompt(question)
@@ -228,6 +241,10 @@ def evaluate_trm_model(
         # Extract answer and check correctness
         predicted = extract_answer(response)
         correct = is_correct(predicted, gold)
+        if correct:
+            correct_count += 1
+        acc = correct_count / (len(results) + 1) * 100
+        pbar.set_description(f"TRM acc={acc:.1f}%")
 
         results.append(
             {
