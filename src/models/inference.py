@@ -2,11 +2,11 @@
 TRM Inference Integration for SmolLM3
 
 Provides inference-time TRM integration where the TRM replaces chain-of-thought
-reasoning entirely. When <think> is detected, TRM processes the context and
-produces a post-thinking hidden state that is used for all subsequent generation.
+reasoning entirely. Uses /no_think mode with TRM enhancement on prompt hidden states.
 
-Key insight: TRM output = hidden state AFTER </think> (post-reasoning state).
-This hidden state encodes all the reasoning and must persist for all future tokens.
+Key insight: With /no_think mode, the model skips thinking and goes straight to answer.
+We enhance the prompt's hidden states with TRM before generation, giving the model
+"pre-computed reasoning" in latent space.
 """
 
 import sys
@@ -147,15 +147,14 @@ class SmolLMWithTRMInference(nn.Module):
     """
     SmolLM3 with TRM inference integration.
 
-    When the model generates a <think> token, the TRM intercepts and replaces
-    the chain-of-thought with its latent reasoning. The TRM output (post-thinking
-    hidden state) is used for subsequent generation.
+    Uses /no_think mode and enhances prompt hidden states with TRM before generation.
+    The TRM provides "latent reasoning" that the model uses to generate answers directly.
 
     Flow:
-    1. Generate tokens until <think> is produced
-    2. Run TRM on context hidden states (excluding <think>)
-    3. TRM output = post-thinking hidden state
-    4. Use this for logits AND populate KV cache for future tokens
+    1. Format prompt with /no_think mode (skips CoT, goes straight to answer)
+    2. Get hidden states for the prompt
+    3. Run TRM: compress → reasoning → decompress
+    4. Generate from TRM-enhanced hidden state
     """
 
     def __init__(
@@ -205,11 +204,6 @@ class SmolLMWithTRMInference(nn.Module):
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-        # Get special token IDs
-        # SmolLM3 uses <think> and </think> for thinking mode
-        self.think_token_id = self.tokenizer.convert_tokens_to_ids("<think>")
-        self.end_think_token_id = self.tokenizer.convert_tokens_to_ids("</think>")
-
         # Load compressor
         self.compressor, self.hidden_size, self.d_compressed = load_compressor(
             compressor_repo, self.device
@@ -218,83 +212,35 @@ class SmolLMWithTRMInference(nn.Module):
         # Load TRM
         self.trm = load_trm(trm_repo, self.d_compressed, self.device)
 
-        # Track if we've done TRM intervention
-        self._trm_activated = False
-        self._trm_reasoning_hidden: torch.Tensor | None = None
-
         print("\nSmolLMWithTRMInference initialized:")
         print(f"  - Model: {model_name}")
-        print(f"  - Think token ID: {self.think_token_id}")
         print(f"  - Hidden size: {self.hidden_size}")
         print(f"  - Compressed dim: {self.d_compressed}")
+        print(f"  - Mode: /no_think + TRM enhancement")
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        past_key_values: Any = None,
-        output_hidden_states: bool = False,
-        **kwargs: Any,
-    ) -> CausalLMOutputWithPast:
+    def _get_trm_enhanced_hidden(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
-        Forward pass with TRM intervention at <think> token.
+        Get TRM-enhanced hidden state for the prompt.
 
-        When the last token in input_ids is <think>:
-        1. Get hidden states for context (excluding <think>)
-        2. Run through compressor → TRM → decompressor
-        3. TRM output = post-thinking hidden state
-        4. Use this for logits AND inject into KV cache
+        Args:
+            input_ids: Tokenized prompt [B, L]
+            attention_mask: Optional attention mask [B, L]
+
+        Returns:
+            TRM-enhanced hidden state for the last position [B, 1, hidden_size]
         """
-        # Check if we need TRM intervention
-        if (
-            input_ids.shape[1] > 0
-            and input_ids[:, -1].item() == self.think_token_id
-            and not self._trm_activated
-        ):
-            return self._forward_with_trm(input_ids, attention_mask, **kwargs)
-
-        # Normal forward pass
-        result: CausalLMOutputWithPast = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            past_key_values=past_key_values,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
-            **kwargs,
-        )
-        return result
-
-    def _forward_with_trm(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        **kwargs: Any,
-    ) -> CausalLMOutputWithPast:
-        """
-        Forward pass with TRM replacing thinking.
-
-        This method:
-        1. Gets hidden states for context (excluding <think>)
-        2. Compresses → TRM → Decompresses
-        3. Returns logits from TRM output
-        4. Stores TRM reasoning hidden state for future injection
-        """
-        # Get hidden states for everything BEFORE <think>
-        context_ids = input_ids[:, :-1]  # Exclude <think>
-        context_mask = attention_mask[:, :-1] if attention_mask is not None else None
-
-        # Forward through model to get hidden states
+        # Get hidden states from the model
         with torch.no_grad():
             outputs = self.model(
-                input_ids=context_ids,
-                attention_mask=context_mask,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 output_hidden_states=True,
                 return_dict=True,
-                use_cache=True,
             )
 
         # Get last layer hidden states [B, L, hidden_size]
-        assert outputs.hidden_states is not None, "Model must return hidden states"
         hidden_states = outputs.hidden_states[-1]
 
         # TRM processing
@@ -302,33 +248,16 @@ class SmolLMWithTRMInference(nn.Module):
         compressed = self.compressor(hidden_states.to(self.compressor.compress.weight.dtype))
 
         # TRM: [B, L, 256] → [B, L+1, 256] (appends reasoning token)
-        trm_output = self.trm(compressed, n_steps=8)  # Use 8 supervision steps
+        trm_output = self.trm(compressed, n_steps=8)
 
         # Decompress: [B, L+1, 256] → [B, L+1, 2048]
         decompressed = self.compressor.decompress(trm_output)
 
-        # The last position (reasoning token) represents post-thinking state
+        # The last position represents the "post-reasoning" state
         reasoning_hidden = decompressed[:, -1:, :]  # [B, 1, 2048]
 
         # Convert to model dtype
-        reasoning_hidden = reasoning_hidden.to(outputs.hidden_states[-1].dtype)
-
-        # Store the TRM reasoning hidden state for future use
-        # This allows us to inject it into subsequent forward passes
-        self._trm_reasoning_hidden = reasoning_hidden
-
-        # Get logits from TRM reasoning
-        logits = self.model.lm_head(reasoning_hidden)  # [B, 1, vocab_size]
-
-        # Mark TRM as activated so we don't trigger again
-        self._trm_activated = True
-
-        # Don't use past_key_values - we'll handle context differently
-        return CausalLMOutputWithPast(
-            logits=logits,
-            past_key_values=None,  # Don't use KV cache after TRM
-            hidden_states=outputs.hidden_states if kwargs.get("output_hidden_states") else None,
-        )
+        return reasoning_hidden.to(hidden_states.dtype)
 
     def generate(
         self,
@@ -336,35 +265,30 @@ class SmolLMWithTRMInference(nn.Module):
         max_new_tokens: int = 256,
         temperature: float = 0.7,
         do_sample: bool = True,
-        enable_thinking: bool = True,
     ) -> dict[str, Any]:
         """
-        Generate text with TRM intervention at <think> token.
+        Generate text with TRM-enhanced reasoning.
+
+        Uses /no_think mode - the model skips CoT and goes straight to answer.
+        TRM enhancement provides latent reasoning in the hidden state.
 
         Args:
             prompt: Input prompt
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             do_sample: Whether to sample or greedy decode
-            enable_thinking: Whether to use thinking mode in the prompt
 
         Returns:
-            Dict with 'text', 'tokens_generated', 'trm_activated'
+            Dict with 'text', 'tokens_generated'
         """
-        # Reset TRM activation flag
-        self._trm_activated = False
-
-        # Format prompt with thinking mode
-        if enable_thinking:
-            messages = [{"role": "user", "content": prompt}]
-            formatted_prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            )
-        else:
-            formatted_prompt = prompt
+        # Format prompt with /no_think mode
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,  # /no_think mode
+        )
 
         # Tokenize
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
@@ -373,36 +297,19 @@ class SmolLMWithTRMInference(nn.Module):
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
 
-        # Custom generation loop to intercept <think>
+        # Get TRM-enhanced hidden state for the prompt
+        with torch.no_grad():
+            reasoning_hidden = self._get_trm_enhanced_hidden(input_ids, attention_mask)
+
+        # Get first token logits from TRM-enhanced hidden state
+        logits = self.model.lm_head(reasoning_hidden)[:, -1, :]
+
+        # Generate tokens
         generated_ids = input_ids.clone()
-        past_key_values = None
         tokens_generated = 0
 
         with torch.no_grad():
-            for _ in range(max_new_tokens):
-                # Forward pass (will trigger TRM if <think> detected)
-                if past_key_values is None:
-                    outputs = self.forward(
-                        input_ids=generated_ids,
-                        attention_mask=attention_mask,
-                    )
-                else:
-                    # Use only the last token when we have KV cache
-                    outputs = self.forward(
-                        input_ids=generated_ids[:, -1:],
-                        past_key_values=past_key_values,
-                    )
-
-                past_key_values = outputs.past_key_values
-                assert outputs.logits is not None, "Model must return logits"
-                logits = outputs.logits[:, -1, :]
-
-                # After TRM activation, mask out <think> and </think> tokens
-                # to prevent the model from trying to "think again"
-                if self._trm_activated:
-                    logits[:, self.think_token_id] = float("-inf")
-                    logits[:, self.end_think_token_id] = float("-inf")
-
+            for step in range(max_new_tokens):
                 # Sample next token
                 if do_sample and temperature > 0:
                     probs = torch.softmax(logits / temperature, dim=-1)
@@ -410,59 +317,22 @@ class SmolLMWithTRMInference(nn.Module):
                 else:
                     next_token = logits.argmax(dim=-1, keepdim=True)
 
-                # Check if <think> was just generated - DON'T append it
-                # TRM will be activated on next forward pass, and we don't want
-                # <think> in the output since TRM replaces the thinking
-                if next_token.item() == self.think_token_id and not self._trm_activated:
-                    # Append <think> temporarily so forward() can detect it
-                    generated_ids = torch.cat([generated_ids, next_token], dim=1)
-                    if attention_mask is not None:
-                        attention_mask = torch.cat(
-                            [attention_mask, torch.ones(1, 1, device=self.device)], dim=1
-                        )
-
-                    # Run forward with <think> to trigger TRM
-                    outputs = self.forward(
-                        input_ids=generated_ids,
-                        attention_mask=attention_mask,
-                    )
-
-                    # Now remove <think> from generated_ids - TRM replaced it
-                    generated_ids = generated_ids[:, :-1]
-                    if attention_mask is not None:
-                        attention_mask = attention_mask[:, :-1]
-
-                    # IMPORTANT: Don't use KV cache after TRM activation
-                    # The TRM output isn't in the KV cache, so we need to
-                    # recompute from scratch each step to maintain consistency
-                    past_key_values = None
-
-                    # Get next token from TRM output (this is the answer token)
-                    assert outputs.logits is not None
-                    logits = outputs.logits[:, -1, :]
-                    # Mask thinking tokens
-                    logits[:, self.think_token_id] = float("-inf")
-                    logits[:, self.end_think_token_id] = float("-inf")
-
-                    if do_sample and temperature > 0:
-                        probs = torch.softmax(logits / temperature, dim=-1)
-                        next_token = torch.multinomial(probs, num_samples=1)
-                    else:
-                        next_token = logits.argmax(dim=-1, keepdim=True)
-
                 # Append to generated
                 generated_ids = torch.cat([generated_ids, next_token], dim=1)
                 tokens_generated += 1
 
-                # Update attention mask
-                if attention_mask is not None:
-                    attention_mask = torch.cat(
-                        [attention_mask, torch.ones(1, 1, device=self.device)], dim=1
-                    )
-
                 # Check for EOS
                 if next_token.item() == self.tokenizer.eos_token_id:
                     break
+
+                # Get next logits (normal forward, no TRM after first token)
+                # We only need the last token since we're generating autoregressively
+                outputs = self.model(
+                    input_ids=generated_ids,
+                    attention_mask=None,
+                    return_dict=True,
+                )
+                logits = outputs.logits[:, -1, :]
 
         # Decode
         generated_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=False)
@@ -470,14 +340,8 @@ class SmolLMWithTRMInference(nn.Module):
         return {
             "text": generated_text,
             "tokens_generated": tokens_generated,
-            "trm_activated": self._trm_activated,
             "prompt": formatted_prompt,
         }
-
-    def reset(self) -> None:
-        """Reset TRM activation state for new generation."""
-        self._trm_activated = False
-        self._trm_reasoning_hidden = None
 
 
 class CompressorOnlyInference(nn.Module):
@@ -642,7 +506,7 @@ class CompressorOnlyInference(nn.Module):
 def test_trm_inference() -> None:
     """Quick test of TRM inference on a GSM8K-style problem."""
     print("=" * 60)
-    print("Testing TRM Inference")
+    print("Testing TRM Inference (/no_think + TRM)")
     print("=" * 60)
 
     # Initialize model
@@ -660,112 +524,18 @@ def test_trm_inference() -> None:
         max_new_tokens=100,
         temperature=0.0,  # Greedy for reproducibility
         do_sample=False,
-        enable_thinking=True,
     )
 
     print(f"Generated text:\n{result['text']}")
     print(f"\nTokens generated: {result['tokens_generated']}")
-    print(f"TRM activated: {result['trm_activated']}")
 
-    # Check for <think> in assistant's response only (not system prompt)
+    # Extract assistant response
     if "<|im_start|>assistant" in result["text"]:
         assistant_response = result["text"].split("<|im_start|>assistant")[-1]
-        if "<think>" in assistant_response:
-            print("\n❌ WARNING: <think> found in assistant response!")
-        else:
-            print("\n✓ Good: No <think> in assistant response")
-
-        # Debug: Show first 50 chars of assistant response
         clean_response = assistant_response.strip()
-        print(f"\nFirst 100 chars of response: {repr(clean_response[:100])}")
+        print(f"\nAssistant response: {repr(clean_response[:200])}")
     else:
         print("\nCould not find assistant response marker")
-
-
-def test_trm_debug() -> None:
-    """Debug test to understand TRM output tokens."""
-    print("=" * 60)
-    print("TRM Debug Test")
-    print("=" * 60)
-
-    model = SmolLMWithTRMInference()
-    problem = "What is 2 + 2?"
-
-    print(f"\nProblem: {problem}")
-
-    # Generate with detailed token tracking
-    model.reset()
-
-    # Format prompt
-    messages = [{"role": "user", "content": problem}]
-    formatted_prompt = model.tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=True,
-    )
-
-    inputs = model.tokenizer(formatted_prompt, return_tensors="pt")
-    input_ids = inputs["input_ids"].to(model.device)
-
-    print(f"Input length: {input_ids.shape[1]} tokens")
-
-    # Generate token by token and track
-    generated_ids = input_ids.clone()
-    generated_tokens = []
-
-    with torch.no_grad():
-        for i in range(20):  # Just 20 tokens for debugging
-            outputs = model.forward(
-                input_ids=generated_ids,
-                attention_mask=None,
-            )
-
-            assert outputs.logits is not None
-            logits = outputs.logits[:, -1, :]
-
-            # Check if <think> would be generated (before masking)
-            think_prob = torch.softmax(logits, dim=-1)[0, model.think_token_id].item()
-
-            # Apply masking if TRM is active
-            if model._trm_activated:
-                logits[:, model.think_token_id] = float("-inf")
-                logits[:, model.end_think_token_id] = float("-inf")
-
-            next_token = logits.argmax(dim=-1, keepdim=True)
-            next_token_str = model.tokenizer.decode(next_token[0])
-
-            # Handle <think> interception
-            if next_token.item() == model.think_token_id and not model._trm_activated:
-                print(f"\nStep {i}: <think> detected! Running TRM...")
-                # Temporarily add <think>
-                generated_ids = torch.cat([generated_ids, next_token], dim=1)
-                # Trigger TRM
-                outputs = model.forward(input_ids=generated_ids, attention_mask=None)
-                # Remove <think>
-                generated_ids = generated_ids[:, :-1]
-                # Get new logits
-                assert outputs.logits is not None
-                logits = outputs.logits[:, -1, :]
-                logits[:, model.think_token_id] = float("-inf")
-                logits[:, model.end_think_token_id] = float("-inf")
-                next_token = logits.argmax(dim=-1, keepdim=True)
-                next_token_str = model.tokenizer.decode(next_token[0])
-                print(f"  TRM activated! Next token: {repr(next_token_str)}")
-
-            generated_ids = torch.cat([generated_ids, next_token], dim=1)
-            generated_tokens.append(next_token_str)
-
-            print(
-                f"Step {i}: {repr(next_token_str):15} "
-                f"(think_prob={think_prob:.4f}, trm_active={model._trm_activated})"
-            )
-
-            if next_token.item() == model.tokenizer.eos_token_id:
-                break
-
-    print(f"\nGenerated tokens: {generated_tokens}")
-    print(f"Full output: {model.tokenizer.decode(generated_ids[0], skip_special_tokens=False)}")
 
 
 def test_comparison() -> None:
@@ -839,9 +609,9 @@ def test_comparison() -> None:
     del base_model
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-    # Test 3: TRM model
+    # Test 3: TRM model (/no_think + TRM enhancement)
     print("\n" + "=" * 70)
-    print("TEST 3: TRM model (thinking replaced by TRM)")
+    print("TEST 3: TRM model (/no_think + TRM enhancement)")
     print("=" * 70)
     trm_model = SmolLMWithTRMInference()
     result = trm_model.generate(
@@ -849,7 +619,6 @@ def test_comparison() -> None:
         max_new_tokens=max_tokens,
         temperature=0.0,
         do_sample=False,
-        enable_thinking=True,
     )
     response_trm = result["text"]
     if "<|im_start|>assistant" in response_trm:
@@ -857,7 +626,6 @@ def test_comparison() -> None:
         if "<|im_end|>" in response_trm:
             response_trm = response_trm.split("<|im_end|>")[0]
     print(f"Response:\n{response_trm[:500]}")
-    print(f"\nTRM activated: {result['trm_activated']}")
 
     # Summary
     print("\n" + "=" * 70)
@@ -871,9 +639,7 @@ def test_comparison() -> None:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) > 1 and sys.argv[1] == "debug":
-        test_trm_debug()
-    elif len(sys.argv) > 1 and sys.argv[1] == "compare":
+    if len(sys.argv) > 1 and sys.argv[1] == "compare":
         test_comparison()
     else:
         test_trm_inference()

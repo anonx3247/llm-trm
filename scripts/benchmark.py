@@ -203,12 +203,11 @@ def evaluate_trm_model(
     max_new_tokens: int = 512,
     temperature: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """Evaluate SmolLM3 with TRM replacing thinking."""
+    """Evaluate SmolLM3 with TRM (/no_think + TRM enhancement)."""
     model = SmolLMWithTRMInference()
 
     results = []
     correct_count = 0
-    trm_activations = 0
     pbar = tqdm(samples, desc="TRM acc=0.0%")
     for sample in pbar:
         question = sample["question"]
@@ -221,15 +220,8 @@ def evaluate_trm_model(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             do_sample=temperature > 0,
-            enable_thinking=True,
         )
         gen_time = time.time() - start_time
-
-        if result["trm_activated"]:
-            trm_activations += 1
-
-        # Reset for next sample
-        model.reset()
 
         # Extract assistant response
         response = result["text"]
@@ -255,11 +247,8 @@ def evaluate_trm_model(
                 "response": response,
                 "tokens": result["tokens_generated"],
                 "time": gen_time,
-                "trm_activated": result["trm_activated"],
             }
         )
-
-    print(f"\nTRM activated on {trm_activations}/{len(samples)} samples")
 
     # Clean up
     del model
