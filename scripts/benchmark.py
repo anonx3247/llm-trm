@@ -277,8 +277,8 @@ def main() -> None:
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=512,
-        help="Maximum new tokens to generate",
+        default=None,
+        help="Maximum new tokens to generate (default: None = no limit, uses 8192)",
     )
     parser.add_argument(
         "--temperature",
@@ -300,6 +300,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Handle max_tokens default
+    if args.max_tokens is None:
+        args.max_tokens = 8192  # Effectively no limit
 
     # Validate arguments
     if args.model != "base" and args.thinking == "off":

@@ -51,16 +51,27 @@ def extract_answer(text: str) -> str | None:
     Returns:
         Extracted number as string, or None if not found
     """
+    # If there's a </think> tag, only look at the text AFTER it
+    # This prevents extracting numbers from the thinking section
+    if "</think>" in text:
+        text = text.split("</think>")[-1]
+
     # First try to find #### format (GSM8K ground truth format)
     match = re.search(r"####\s*(-?\d+(?:,\d+)*(?:\.\d+)?)", text)
     if match:
         # Remove commas from numbers like "1,234"
         return match.group(1).replace(",", "")
 
+    # Try to find boxed format (common in math): \boxed{123}
+    match = re.search(r"\\boxed\{(-?\d+(?:,\d+)*(?:\.\d+)?)\}", text)
+    if match:
+        return match.group(1).replace(",", "")
+
     # Try to find "answer is X" or "= X" patterns
     patterns = [
-        r"(?:answer|result|total|sum)\s*(?:is|=|:)\s*(-?\d+(?:,\d+)*(?:\.\d+)?)",
-        r"=\s*(-?\d+(?:,\d+)*(?:\.\d+)?)\s*$",
+        r"(?:final\s+)?(?:answer|result|total|sum)\s*(?:is|=|:)\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)",
+        r"=\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)\s*$",
+        r"\$(-?\d+(?:,\d+)*(?:\.\d+)?)\s*$",  # Dollar amount at end
         r"(-?\d+(?:,\d+)*(?:\.\d+)?)\s*$",  # Last number in text
     ]
 
@@ -109,7 +120,7 @@ def format_gsm8k_prompt(question: str) -> str:
     Returns:
         Formatted prompt string
     """
-    return f"{question}\n\nPlease solve this step by step and provide the final answer after ####."
+    return f"{question}\n\nPut your final answer in \\boxed{{}}."
 
 
 # Quick test
