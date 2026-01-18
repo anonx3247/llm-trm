@@ -6,12 +6,14 @@ Evaluates SmolLM3 on GSM8K or AIME with different configurations:
 - base (--thinking off): SmolLM3 without thinking mode
 - base (--thinking on): SmolLM3 with native chain-of-thought
 - compressor: SmolLM3 with hidden states passed through compressor
-- trm: SmolLM3 with TRM replacing thinking
+- trm: SmolLM3 with TRM replacing thinking (uses compressor)
+- trm-direct: SmolLM3 with TRM on full 2048 dim (no compression)
 
 Usage:
     python scripts/benchmark.py --model base --thinking on --dataset gsm8k --num_samples 100
     python scripts/benchmark.py --model base --thinking on --dataset aime --num_samples 30
     python scripts/benchmark.py --model trm --dataset aime --num_samples 30
+    python scripts/benchmark.py --model trm-direct --dataset gsm8k --num_samples 100
 """
 
 import sys
@@ -43,7 +45,11 @@ from src.evaluation.gsm8k import (
     is_correct as is_correct_gsm8k,
     load_gsm8k,
 )
-from src.models.inference import CompressorOnlyInference, SmolLMWithTRMInference
+from src.models.inference import (
+    CompressorOnlyInference,
+    SmolLMWithDirectTRMInference,
+    SmolLMWithTRMInference,
+)
 
 
 # Dataset utilities - selected based on --dataset arg
@@ -297,14 +303,84 @@ def evaluate_trm_model(
     return results
 
 
+def evaluate_trm_direct_model(
+    samples: list[dict[str, Any]],
+    format_prompt: Callable[[str], str],
+    extract_answer: Callable[[str], str | None],
+    is_correct: Callable[[str | None, str | None], bool],
+    max_new_tokens: int = 512,
+    temperature: float = 0.0,
+    trm_checkpoint: str | None = None,
+) -> list[dict[str, Any]]:
+    """Evaluate SmolLM3 with direct TRM (no compression)."""
+    model = SmolLMWithDirectTRMInference(trm_checkpoint=trm_checkpoint)
+
+    results = []
+    correct_count = 0
+    pbar = tqdm(samples, desc="TRM-Direct acc=0.0%")
+    for sample in pbar:
+        question = sample["question"]
+        gold = sample["gold"]
+        prompt = format_prompt(question)
+
+        start_time = time.time()
+        result = model.generate(
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+        )
+        gen_time = time.time() - start_time
+
+        # Extract assistant response
+        response = result["text"]
+        if "<|im_start|>assistant" in response:
+            response = response.split("<|im_start|>assistant")[-1]
+            if "<|im_end|>" in response:
+                response = response.split("<|im_end|>")[0]
+
+        # Extract answer and check correctness
+        predicted = extract_answer(response)
+        correct = is_correct(predicted, gold)
+        if correct:
+            correct_count += 1
+        acc = correct_count / (len(results) + 1) * 100
+        pbar.set_description(f"TRM-Direct acc={acc:.1f}%")
+
+        results.append(
+            {
+                "question": question,
+                "gold": gold,
+                "predicted": predicted,
+                "correct": correct,
+                "response": response,
+                "tokens": result["tokens_generated"],
+                "time": gen_time,
+            }
+        )
+
+    # Clean up
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Math Benchmark for LLM-TRM")
     parser.add_argument(
         "--model",
         type=str,
-        choices=["base", "compressor", "trm"],
+        choices=["base", "compressor", "trm", "trm-direct"],
         required=True,
         help="Model type to evaluate",
+    )
+    parser.add_argument(
+        "--trm_checkpoint",
+        type=str,
+        default=None,
+        help="Path to TRM checkpoint (for trm-direct model)",
     )
     parser.add_argument(
         "--dataset",
@@ -397,6 +473,17 @@ def main() -> None:
             temperature=args.temperature,
         )
         model_name = "trm"
+    elif args.model == "trm-direct":
+        results = evaluate_trm_direct_model(
+            samples,
+            format_prompt=format_prompt,
+            extract_answer=extract_answer,
+            is_correct=is_correct,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            trm_checkpoint=args.trm_checkpoint,
+        )
+        model_name = "trm_direct"
     else:
         print(f"Unknown model: {args.model}")
         sys.exit(1)
