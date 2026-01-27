@@ -565,6 +565,8 @@ def load_trm_direct(
 
     if checkpoint_path:
         print(f"Loading TRM weights from {checkpoint_path}...")
+        # Fix pickle compatibility
+        sys.modules["__main__"].Phase2Config = Phase2Config  # type: ignore[attr-defined]
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         state_dict = (
             checkpoint.get("trm_state_dict")
