@@ -52,6 +52,61 @@ from src.models.inference import (
 )
 
 
+class ExampleTracker:
+    """Track and print example outputs during evaluation."""
+
+    def __init__(self, n_examples: int = 3):
+        self.n_examples = n_examples
+        self.correct_examples: list[dict[str, Any]] = []
+        self.incorrect_examples: list[dict[str, Any]] = []
+        self.printed = False
+
+    def add(self, result: dict[str, Any]) -> None:
+        """Add a result and print examples once we have enough."""
+        if self.printed:
+            return
+
+        if result["correct"] and len(self.correct_examples) < self.n_examples:
+            self.correct_examples.append(result)
+        elif not result["correct"] and len(self.incorrect_examples) < self.n_examples:
+            self.incorrect_examples.append(result)
+
+        # Print once we have enough of both (or we've seen enough samples)
+        if (
+            len(self.correct_examples) >= self.n_examples
+            and len(self.incorrect_examples) >= self.n_examples
+        ):
+            self._print_examples()
+
+    def flush(self) -> None:
+        """Print whatever examples we have (call at end if not yet printed)."""
+        if not self.printed:
+            self._print_examples()
+
+    def _print_examples(self) -> None:
+        """Print collected examples."""
+        self.printed = True
+
+        def print_example(r: dict[str, Any], idx: int) -> None:
+            print(f"\n  [{idx}] Q: {r['question'][:80]}...")
+            print(f"      Gold: {r['gold']} | Predicted: {r['predicted']}")
+            response = r["response"].strip().replace("\n", " ")
+            if len(response) > 200:
+                response = response[:200] + "..."
+            print(f"      Response: {response}")
+
+        print("\n" + "-" * 60)
+        print(f"CORRECT EXAMPLES ({len(self.correct_examples)})")
+        for i, r in enumerate(self.correct_examples, 1):
+            print_example(r, i)
+
+        print("\n" + "-" * 60)
+        print(f"INCORRECT EXAMPLES ({len(self.incorrect_examples)})")
+        for i, r in enumerate(self.incorrect_examples, 1):
+            print_example(r, i)
+        print("-" * 60 + "\n")
+
+
 # Dataset utilities - selected based on --dataset arg
 def get_dataset_utils(dataset: str) -> tuple[
     Callable[[str], list[dict[str, Any]]],  # load_fn
@@ -112,6 +167,7 @@ def evaluate_base_model(
 
     results = []
     correct_count = 0
+    tracker = ExampleTracker()
     pbar = tqdm(samples, desc=f"Base (think={thinking}) acc=0.0%")
     for sample in pbar:
         question = sample["question"]
@@ -157,17 +213,19 @@ def evaluate_base_model(
         acc = correct_count / (len(results) + 1) * 100
         pbar.set_description(f"Base (think={thinking}) acc={acc:.1f}%")
 
-        results.append(
-            {
-                "question": question,
-                "gold": gold,
-                "predicted": predicted,
-                "correct": correct,
-                "response": response,
-                "tokens": len(outputs[0]) - len(inputs["input_ids"][0]),
-                "time": gen_time,
-            }
-        )
+        result = {
+            "question": question,
+            "gold": gold,
+            "predicted": predicted,
+            "correct": correct,
+            "response": response,
+            "tokens": len(outputs[0]) - len(inputs["input_ids"][0]),
+            "time": gen_time,
+        }
+        results.append(result)
+        tracker.add(result)
+
+    tracker.flush()
 
     # Clean up
     del model
@@ -190,6 +248,7 @@ def evaluate_compressor_model(
 
     results = []
     correct_count = 0
+    tracker = ExampleTracker()
     pbar = tqdm(samples, desc="Compressor acc=0.0%")
     for sample in pbar:
         question = sample["question"]
@@ -220,17 +279,19 @@ def evaluate_compressor_model(
         acc = correct_count / (len(results) + 1) * 100
         pbar.set_description(f"Compressor acc={acc:.1f}%")
 
-        results.append(
-            {
-                "question": question,
-                "gold": gold,
-                "predicted": predicted,
-                "correct": correct,
-                "response": response,
-                "tokens": result["tokens_generated"],
-                "time": gen_time,
-            }
-        )
+        result_dict = {
+            "question": question,
+            "gold": gold,
+            "predicted": predicted,
+            "correct": correct,
+            "response": response,
+            "tokens": result["tokens_generated"],
+            "time": gen_time,
+        }
+        results.append(result_dict)
+        tracker.add(result_dict)
+
+    tracker.flush()
 
     # Clean up
     del model
@@ -253,6 +314,7 @@ def evaluate_trm_model(
 
     results = []
     correct_count = 0
+    tracker = ExampleTracker()
     pbar = tqdm(samples, desc="TRM acc=0.0%")
     for sample in pbar:
         question = sample["question"]
@@ -283,17 +345,19 @@ def evaluate_trm_model(
         acc = correct_count / (len(results) + 1) * 100
         pbar.set_description(f"TRM acc={acc:.1f}%")
 
-        results.append(
-            {
-                "question": question,
-                "gold": gold,
-                "predicted": predicted,
-                "correct": correct,
-                "response": response,
-                "tokens": result["tokens_generated"],
-                "time": gen_time,
-            }
-        )
+        result_dict = {
+            "question": question,
+            "gold": gold,
+            "predicted": predicted,
+            "correct": correct,
+            "response": response,
+            "tokens": result["tokens_generated"],
+            "time": gen_time,
+        }
+        results.append(result_dict)
+        tracker.add(result_dict)
+
+    tracker.flush()
 
     # Clean up
     del model
@@ -317,6 +381,7 @@ def evaluate_trm_direct_model(
 
     results = []
     correct_count = 0
+    tracker = ExampleTracker()
     pbar = tqdm(samples, desc="TRM-Direct acc=0.0%")
     for sample in pbar:
         question = sample["question"]
@@ -347,17 +412,19 @@ def evaluate_trm_direct_model(
         acc = correct_count / (len(results) + 1) * 100
         pbar.set_description(f"TRM-Direct acc={acc:.1f}%")
 
-        results.append(
-            {
-                "question": question,
-                "gold": gold,
-                "predicted": predicted,
-                "correct": correct,
-                "response": response,
-                "tokens": result["tokens_generated"],
-                "time": gen_time,
-            }
-        )
+        result_dict = {
+            "question": question,
+            "gold": gold,
+            "predicted": predicted,
+            "correct": correct,
+            "response": response,
+            "tokens": result["tokens_generated"],
+            "time": gen_time,
+        }
+        results.append(result_dict)
+        tracker.add(result_dict)
+
+    tracker.flush()
 
     # Clean up
     del model
@@ -533,32 +600,6 @@ def main() -> None:
     with open(output_path, "w") as f:
         json.dump(output_data, f, indent=2)
     print(f"\nResults saved to: {output_path}")
-
-    # Show example successes and failures
-    correct_examples = [r for r in results if r["correct"]][:3]
-    incorrect_examples = [r for r in results if not r["correct"]][:3]
-
-    def print_example(r: dict[str, Any], idx: int) -> None:
-        print(f"\n[{idx}] Question: {r['question'][:100]}...")
-        print(f"    Gold: {r['gold']}")
-        print(f"    Predicted: {r['predicted']}")
-        # Show truncated response
-        response = r["response"].strip()
-        if len(response) > 300:
-            response = response[:300] + "..."
-        print(f"    Response: {response}")
-
-    print("\n" + "=" * 60)
-    print(f"CORRECT EXAMPLES ({len(correct_examples)} shown)")
-    print("=" * 60)
-    for i, r in enumerate(correct_examples, 1):
-        print_example(r, i)
-
-    print("\n" + "=" * 60)
-    print(f"INCORRECT EXAMPLES ({len(incorrect_examples)} shown)")
-    print("=" * 60)
-    for i, r in enumerate(incorrect_examples, 1):
-        print_example(r, i)
 
 
 if __name__ == "__main__":
