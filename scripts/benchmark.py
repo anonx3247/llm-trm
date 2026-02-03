@@ -534,15 +534,31 @@ def main() -> None:
         json.dump(output_data, f, indent=2)
     print(f"\nResults saved to: {output_path}")
 
-    # Show some examples
-    print("\n" + "=" * 60)
-    print("SAMPLE RESULTS (first 3)")
-    print("=" * 60)
-    for i, r in enumerate(results[:3]):
-        print(f"\n[{i+1}] Question: {r['question'][:80]}...")
+    # Show example successes and failures
+    correct_examples = [r for r in results if r["correct"]][:3]
+    incorrect_examples = [r for r in results if not r["correct"]][:3]
+
+    def print_example(r: dict[str, Any], idx: int) -> None:
+        print(f"\n[{idx}] Question: {r['question'][:100]}...")
         print(f"    Gold: {r['gold']}")
         print(f"    Predicted: {r['predicted']}")
-        print(f"    Correct: {'✓' if r['correct'] else '✗'}")
+        # Show truncated response
+        response = r["response"].strip()
+        if len(response) > 300:
+            response = response[:300] + "..."
+        print(f"    Response: {response}")
+
+    print("\n" + "=" * 60)
+    print(f"CORRECT EXAMPLES ({len(correct_examples)} shown)")
+    print("=" * 60)
+    for i, r in enumerate(correct_examples, 1):
+        print_example(r, i)
+
+    print("\n" + "=" * 60)
+    print(f"INCORRECT EXAMPLES ({len(incorrect_examples)} shown)")
+    print("=" * 60)
+    for i, r in enumerate(incorrect_examples, 1):
+        print_example(r, i)
 
 
 if __name__ == "__main__":
