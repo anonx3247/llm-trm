@@ -57,54 +57,32 @@ class ExampleTracker:
 
     def __init__(self, n_examples: int = 3):
         self.n_examples = n_examples
-        self.correct_examples: list[dict[str, Any]] = []
-        self.incorrect_examples: list[dict[str, Any]] = []
-        self.printed = False
+        self.n_correct = 0
+        self.n_incorrect = 0
 
     def add(self, result: dict[str, Any]) -> None:
-        """Add a result and print examples once we have enough."""
-        if self.printed:
-            return
+        """Print example immediately if we haven't shown enough of this type."""
+        if result["correct"]:
+            if self.n_correct < self.n_examples:
+                self.n_correct += 1
+                self._print_example(result, "CORRECT", self.n_correct)
+        else:
+            if self.n_incorrect < self.n_examples:
+                self.n_incorrect += 1
+                self._print_example(result, "INCORRECT", self.n_incorrect)
 
-        if result["correct"] and len(self.correct_examples) < self.n_examples:
-            self.correct_examples.append(result)
-        elif not result["correct"] and len(self.incorrect_examples) < self.n_examples:
-            self.incorrect_examples.append(result)
-
-        # Print once we have enough of both (or we've seen enough samples)
-        if (
-            len(self.correct_examples) >= self.n_examples
-            and len(self.incorrect_examples) >= self.n_examples
-        ):
-            self._print_examples()
+    def _print_example(self, r: dict[str, Any], label: str, idx: int) -> None:
+        """Print a single example."""
+        response = r["response"].strip().replace("\n", " ")
+        if len(response) > 200:
+            response = response[:200] + "..."
+        print(f"\n[{label} {idx}] Q: {r['question'][:80]}...")
+        print(f"  Gold: {r['gold']} | Predicted: {r['predicted']}")
+        print(f"  Response: {response}")
 
     def flush(self) -> None:
-        """Print whatever examples we have (call at end if not yet printed)."""
-        if not self.printed:
-            self._print_examples()
-
-    def _print_examples(self) -> None:
-        """Print collected examples."""
-        self.printed = True
-
-        def print_example(r: dict[str, Any], idx: int) -> None:
-            print(f"\n  [{idx}] Q: {r['question'][:80]}...")
-            print(f"      Gold: {r['gold']} | Predicted: {r['predicted']}")
-            response = r["response"].strip().replace("\n", " ")
-            if len(response) > 200:
-                response = response[:200] + "..."
-            print(f"      Response: {response}")
-
-        print("\n" + "-" * 60)
-        print(f"CORRECT EXAMPLES ({len(self.correct_examples)})")
-        for i, r in enumerate(self.correct_examples, 1):
-            print_example(r, i)
-
-        print("\n" + "-" * 60)
-        print(f"INCORRECT EXAMPLES ({len(self.incorrect_examples)})")
-        for i, r in enumerate(self.incorrect_examples, 1):
-            print_example(r, i)
-        print("-" * 60 + "\n")
+        """No-op, kept for compatibility."""
+        pass
 
 
 # Dataset utilities - selected based on --dataset arg
