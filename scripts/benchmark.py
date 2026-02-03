@@ -73,12 +73,14 @@ class ExampleTracker:
 
     def _print_example(self, r: dict[str, Any], label: str, idx: int) -> None:
         """Print a single example."""
-        response = r["response"].strip().replace("\n", " ")
-        if len(response) > 200:
-            response = response[:200] + "..."
-        print(f"\n[{label} {idx}] Q: {r['question'][:80]}...")
-        print(f"  Gold: {r['gold']} | Predicted: {r['predicted']}")
-        print(f"  Response: {response}")
+        print(f"\n{'='*60}")
+        print(f"[{label} {idx}]")
+        print(f"{'='*60}")
+        print(f"Question: {r['question']}")
+        print(f"\nGold: {r['gold']}")
+        print(f"Predicted: {r['predicted']}")
+        print(f"\nResponse:\n{r['response'].strip()}")
+        print("="*60)
 
     def flush(self) -> None:
         """No-op, kept for compatibility."""
