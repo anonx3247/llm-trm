@@ -108,6 +108,9 @@ class Phase2Config:
     use_ema: bool = True
     ema_decay: float = 0.999
 
+    # Performance
+    use_compile: bool = True  # torch.compile for faster training
+
     # Output
     output_dir: str = "./checkpoints/phase2"
     log_steps: int = 10
@@ -675,6 +678,11 @@ class TRMSequenceTrainer:
         num_params = sum(p.numel() for p in self.trm.parameters())
         print(f"TRM initialized. Parameters: {num_params:,}")
 
+        # torch.compile for faster training (CUDA only)
+        if self.device.type == "cuda" and self.config.use_compile:
+            print("Compiling TRM with torch.compile...")
+            self.trm = torch.compile(self.trm)  # type: ignore[assignment]
+
     def _init_optimizer(self) -> None:
         """Initialize optimizer and scheduler."""
         self.optimizer = AdamW(
@@ -1220,6 +1228,10 @@ if __name__ == "__main__":
     parser.add_argument("--no_ema", action="store_false", dest="use_ema")
     parser.add_argument("--ema_decay", type=float, default=0.999)
 
+    # Performance
+    parser.add_argument("--compile", action="store_true", default=True, help="Use torch.compile")
+    parser.add_argument("--no_compile", action="store_false", dest="compile")
+
     # Wandb
     parser.add_argument("--use_wandb", action="store_true", default=True)
     parser.add_argument("--no_wandb", action="store_false", dest="use_wandb")
@@ -1264,6 +1276,7 @@ if __name__ == "__main__":
         per_step_updates=args.per_step_updates,
         use_ema=args.use_ema,
         ema_decay=args.ema_decay,
+        use_compile=args.compile,
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
