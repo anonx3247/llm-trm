@@ -1152,6 +1152,12 @@ if __name__ == "__main__":
         default=None,
         help="Number of attention heads (default: 8 with compressor, 16 without)",
     )
+    parser.add_argument(
+        "--n_layers",
+        type=int,
+        default=None,
+        help="Number of TRM transformer layers (default: 2, try 4 for direct mode)",
+    )
     parser.add_argument("--output_dir", type=str, default="./checkpoints/phase2")
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_epochs", type=int, default=100)
@@ -1232,10 +1238,14 @@ if __name__ == "__main__":
     else:
         n_heads = args.n_heads
 
+    # Default n_layers: 2 (paper default), but can increase for direct mode
+    n_layers = args.n_layers if args.n_layers is not None else 2
+
     config = Phase2Config(
         data_path=args.data_path,
         compressor_checkpoint=args.compressor_checkpoint,
         use_compressor=not args.no_compressor,
+        n_layers=n_layers,
         n_heads=n_heads,
         output_dir=args.output_dir,
         batch_size=args.batch_size,
